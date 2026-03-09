@@ -118,6 +118,72 @@ def health():
     }), 200
 
 
+# ── Agent config endpoints ────────────────────────────────────────────────────
+
+@dashboard_app.route("/api/agents/config", methods=["GET"])
+def agents_config_get():
+    """Return per-agent enabled/disabled state and last scheduler run times.
+
+    Response:
+        agents:   { agent_id: bool } — enabled state for each agent
+        schedule: { job_id: { last_run, next_run, running } }
+    """
+    try:
+        # Read agent enabled state from settings table
+        row = fetch_one("SELECT value FROM settings WHERE key = 'agent_config'")
+        agents = json.loads(row["value"]) if row else {}
+
+        # Read scheduler run log (last_run per job_id)
+        runs = fetch_all(
+            "SELECT job_id, MAX(ran_at) AS last_run FROM agent_run_log GROUP BY job_id"
+        )
+        schedule = {r["job_id"]: {"last_run": r["last_run"], "running": False} for r in runs}
+
+        return jsonify({"agents": agents, "schedule": schedule}), 200
+    except Exception as e:
+        logger.error(f"[DASH API] agents_config_get error: {e}")
+        return jsonify({"agents": {}, "schedule": {}}), 200
+
+
+@dashboard_app.route("/api/agents/config", methods=["PATCH"])
+def agents_config_patch():
+    """Enable or disable a single agent by ID.
+
+    Request body:
+        agent_id: str — agent identifier (e.g. 'scout', 'general')
+        enabled:  bool
+
+    Persists to the settings table under key 'agent_config'.
+    """
+    try:
+        data     = request.get_json(force=True) or {}
+        agent_id = str(data.get("agent_id", ""))[:50]
+        enabled  = bool(data.get("enabled", True))
+
+        if not agent_id:
+            return jsonify({"error": "agent_id required"}), 400
+
+        # Read existing config
+        row    = fetch_one("SELECT value FROM settings WHERE key = 'agent_config'")
+        config = json.loads(row["value"]) if row else {}
+        config[agent_id] = enabled
+
+        # Upsert back
+        from memory.database import get_conn
+        with get_conn() as conn:
+            conn.execute(
+                "INSERT INTO settings (key, value) VALUES (?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                ("agent_config", json.dumps(config)),
+            )
+
+        logger.info(f"[DASH API] Agent '{agent_id}' set to enabled={enabled}")
+        return jsonify({"agent_id": agent_id, "enabled": enabled}), 200
+    except Exception as e:
+        logger.error(f"[DASH API] agents_config_patch error: {e}")
+        return jsonify({"error": "Internal server error"}), 500
+
+
 # ── CRM endpoints ─────────────────────────────────────────────────────────────
 
 @dashboard_app.route("/api/crm/status", methods=["GET"])

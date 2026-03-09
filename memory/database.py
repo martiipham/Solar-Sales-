@@ -459,6 +459,22 @@ def init_db():
                 response TEXT NOT NULL,
                 priority INTEGER DEFAULT 5
             );
+
+            -- Key-value settings store (agent config, feature flags, etc.)
+            CREATE TABLE IF NOT EXISTS settings (
+                key TEXT PRIMARY KEY,
+                value TEXT NOT NULL,
+                updated_at TEXT DEFAULT (datetime('now'))
+            );
+
+            -- Agent scheduler run log — tracks when each job last ran
+            CREATE TABLE IF NOT EXISTS agent_run_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id TEXT NOT NULL,
+                ran_at TEXT DEFAULT (datetime('now')),
+                status TEXT DEFAULT 'ok',
+                notes TEXT
+            );
         """)
     _apply_migrations()
     print("[DB] Database ready.")

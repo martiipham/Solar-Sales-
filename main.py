@@ -184,35 +184,87 @@ def setup_scheduler():
     return scheduler
 
 
+def _agent_enabled(agent_id: str) -> bool:
+    """Check if an agent is enabled in the settings table.
+
+    Returns True by default if no config exists for this agent.
+
+    Args:
+        agent_id: Agent identifier matching the frontend catalogue
+    """
+    try:
+        from memory.database import fetch_one
+        import json as _json
+        row = fetch_one("SELECT value FROM settings WHERE key = 'agent_config'")
+        if row:
+            cfg = _json.loads(row["value"])
+            return cfg.get(agent_id, True)
+    except Exception:
+        pass
+    return True
+
+
+def _log_agent_run(job_id: str, status: str = "ok", notes: str = ""):
+    """Write a run record to agent_run_log for dashboard display.
+
+    Args:
+        job_id: Scheduler job identifier
+        status: 'ok' or 'error'
+        notes:  Optional short message
+    """
+    try:
+        from memory.database import insert
+        insert("agent_run_log", {"job_id": job_id, "status": status, "notes": notes})
+    except Exception:
+        pass
+
+
 def _run_general():
     """Scheduled job: run The General's strategic planning cycle."""
+    if not _agent_enabled("general"):
+        logger.info("[SCHEDULER] General skipped — disabled in agent config")
+        return
     try:
         from agents.master_agent import run
         run()
+        _log_agent_run("general")
     except Exception as e:
         logger.error(f"[SCHEDULER] General failed: {e}")
+        _log_agent_run("general", "error", str(e)[:200])
 
 
 def _run_department_heads():
     """Scheduled job: run all Tier 2 department heads."""
+    job = "department_heads"
     try:
         from agents.research_agent import run as research_run
         from agents.content_agent import run as content_run
         from agents.analytics_agent import run as analytics_run
-        research_run()
-        content_run()
-        analytics_run()
+        if _agent_enabled("research"):
+            research_run()
+        if _agent_enabled("content"):
+            content_run()
+        if _agent_enabled("analytics"):
+            analytics_run()
+        _log_agent_run(job)
     except Exception as e:
         logger.error(f"[SCHEDULER] Department heads failed: {e}")
+        _log_agent_run(job, "error", str(e)[:200])
 
 
 def _run_retrospective():
     """Scheduled job: run the weekly retrospective."""
+    job = "retrospective"
+    if not _agent_enabled("retro"):
+        logger.info("[SCHEDULER] Retrospective skipped — disabled")
+        return
     try:
         from memory.retrospective import run
         run()
+        _log_agent_run(job)
     except Exception as e:
         logger.error(f"[SCHEDULER] Retrospective failed: {e}")
+        _log_agent_run(job, "error", str(e)[:200])
 
 
 def _run_pheromone_decay():
@@ -220,71 +272,112 @@ def _run_pheromone_decay():
     try:
         from memory.hot_memory import apply_pheromone_decay
         apply_pheromone_decay()
+        _log_agent_run("pheromone_decay")
     except Exception as e:
         logger.error(f"[SCHEDULER] Pheromone decay failed: {e}")
+        _log_agent_run("pheromone_decay", "error", str(e)[:200])
 
 
 def _run_scout():
     """Scheduled job: scout agent hunts for new solar company prospects."""
+    job = "scout_agent"
+    if not _agent_enabled("scout"):
+        logger.info("[SCHEDULER] Scout skipped — disabled")
+        return
     try:
         from agents.scout_agent import run
         run()
+        _log_agent_run(job)
     except Exception as e:
         logger.error(f"[SCHEDULER] Scout agent failed: {e}")
+        _log_agent_run(job, "error", str(e)[:200])
 
 
 def _run_research_engine():
     """Scheduled job: research engine processes queued research tasks."""
+    job = "research_engine"
+    if not _agent_enabled("research_engine"):
+        logger.info("[SCHEDULER] Research engine skipped — disabled")
+        return
     try:
         from research.orchestrator import run
         run()
+        _log_agent_run(job)
     except Exception as e:
         logger.error(f"[SCHEDULER] Research engine failed: {e}")
+        _log_agent_run(job, "error", str(e)[:200])
 
 
 def _run_data_collection():
     """Scheduled job: data collection engine gathers fresh market data."""
+    job = "data_collection"
+    if not _agent_enabled("data_collection"):
+        logger.info("[SCHEDULER] Data collection skipped — disabled")
+        return
     try:
         from data_collection.orchestrator import run
         run()
+        _log_agent_run(job)
     except Exception as e:
         logger.error(f"[SCHEDULER] Data collection failed: {e}")
+        _log_agent_run(job, "error", str(e)[:200])
 
 
 def _run_pipeline():
     """Scheduled job: pipeline processor normalises and routes collected data."""
+    job = "pipeline_processor"
+    if not _agent_enabled("pipeline"):
+        logger.info("[SCHEDULER] Pipeline processor skipped — disabled")
+        return
     try:
         from data_collection.pipeline.processor import process_batch
         process_batch(since_minutes=260)  # covers 4h interval + buffer
+        _log_agent_run(job)
     except Exception as e:
         logger.error(f"[SCHEDULER] Pipeline processor failed: {e}")
+        _log_agent_run(job, "error", str(e)[:200])
 
 
 def _run_ab_evaluator():
     """Scheduled job: A/B test evaluator checks running tests for winners."""
+    job = "ab_evaluator"
+    if not _agent_enabled("abtester"):
+        logger.info("[SCHEDULER] A/B evaluator skipped — disabled")
+        return
     try:
         from agents.ab_tester import evaluate_tests
         evaluate_tests()
+        _log_agent_run(job)
     except Exception as e:
         logger.error(f"[SCHEDULER] A/B evaluator failed: {e}")
+        _log_agent_run(job, "error", str(e)[:200])
 
 
 def _run_mutation_engine():
     """Scheduled job: mutation engine evolves underperforming strategies."""
+    job = "mutation_engine"
+    if not _agent_enabled("mutation"):
+        logger.info("[SCHEDULER] Mutation engine skipped — disabled")
+        return
     try:
         from agents.mutation_engine import run
         run()
+        _log_agent_run(job)
     except Exception as e:
         logger.error(f"[SCHEDULER] Mutation engine failed: {e}")
+        _log_agent_run(job, "error", str(e)[:200])
 
 
 def _run_explore_monitor():
     """Scheduled job: monitor 72-hour explore experiment lifecycle."""
+    job = "explore_monitor"
     try:
         from capital.portfolio_manager import run_explore_monitor
         run_explore_monitor()
+        _log_agent_run(job)
     except Exception as e:
         logger.error(f"[SCHEDULER] Explore monitor failed: {e}")
+        _log_agent_run(job, "error", str(e)[:200])
 
 
 def _run_bus_expiry():
@@ -292,17 +385,24 @@ def _run_bus_expiry():
     try:
         from bus.message_bus import expire_old_messages
         expire_old_messages()
+        _log_agent_run("bus_expiry")
     except Exception as e:
         logger.error(f"[SCHEDULER] Bus expiry failed: {e}")
+        _log_agent_run("bus_expiry", "error", str(e)[:200])
 
 
 def _run_crm_sync():
     """Scheduled job: pull live CRM data into SQLite cache and update board-state.json."""
+    job = "crm_sync"
+    if not _agent_enabled("crm_sync"):
+        return
     try:
         from api.crm_sync import run
         run()
+        _log_agent_run(job)
     except Exception as e:
         logger.error(f"[SCHEDULER] CRM sync failed: {e}")
+        _log_agent_run(job, "error", str(e)[:200])
 
 
 def start_dashboard_api(port: int):
