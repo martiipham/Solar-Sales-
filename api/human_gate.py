@@ -20,11 +20,12 @@ import hmac
 import json
 import logging
 import time
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from functools import wraps
 from flask import Flask, request, jsonify
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
+import jwt as pyjwt
 from memory.database import update, fetch_all, fetch_one
 from memory.hot_memory import get_swarm_summary, get_pending_experiments
 from memory.cold_ledger import log_experiment_approved, log_experiment_killed
@@ -47,12 +48,14 @@ def _security_headers(response):
     response.headers["Cache-Control"] = "no-store"
     return response
 
-# Rate limiting — brute force protection on auth endpoints (20/min per IP)
+# Rate limiting — Redis-backed when REDIS_URL is set, in-memory fallback otherwise.
+# Brute-force protection: 20/min on auth-sensitive endpoints.
+_storage_uri = config.REDIS_URL if config.REDIS_URL else "memory://"
 _limiter = Limiter(
     app=gate_app,
     key_func=get_remote_address,
     default_limits=[],
-    storage_uri="memory://",
+    storage_uri=_storage_uri,
 )
 
 
@@ -60,8 +63,38 @@ _limiter = Limiter(
 # AUTH HELPERS
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _verify_bearer(token: str) -> bool:
+    """Verify a Bearer token — accepts either a raw GATE_API_KEY or a signed JWT.
+
+    JWT path: token contains two dots → decode with GATE_API_KEY as HS256 secret.
+    Raw key path: constant-time comparison against GATE_API_KEY.
+
+    Args:
+        token: The string after "Bearer "
+
+    Returns:
+        True if valid, False otherwise
+    """
+    if not config.GATE_API_KEY:
+        return True  # dev mode — no key configured
+
+    # JWT: three base64 segments separated by dots
+    if token.count(".") == 2:
+        try:
+            pyjwt.decode(token, config.GATE_API_KEY, algorithms=["HS256"])
+            return True
+        except pyjwt.ExpiredSignatureError:
+            logger.warning("[HUMAN GATE] JWT expired")
+            return False
+        except pyjwt.InvalidTokenError:
+            return False
+
+    # Raw key fallback (backwards-compatible with CLI / curl usage)
+    return hmac.compare_digest(token, config.GATE_API_KEY)
+
+
 def _require_api_key(f):
-    """Decorator: require Bearer token matching GATE_API_KEY.
+    """Decorator: require Bearer token (raw key or JWT) on protected endpoints.
 
     If GATE_API_KEY is not configured, logs a warning but allows through
     (so local dev without a key still works). In production always set the key.
@@ -72,7 +105,7 @@ def _require_api_key(f):
             logger.warning("[HUMAN GATE] GATE_API_KEY not set — endpoint is unprotected")
             return f(*args, **kwargs)
         auth = request.headers.get("Authorization", "")
-        if not auth.startswith("Bearer ") or auth[7:] != config.GATE_API_KEY:
+        if not auth.startswith("Bearer ") or not _verify_bearer(auth[7:]):
             logger.warning(f"[HUMAN GATE] Unauthorised request to {request.path} from {request.remote_addr}")
             return jsonify({"error": "Unauthorised"}), 401
         return f(*args, **kwargs)
@@ -127,6 +160,43 @@ def health():
         "halted": is_halted(),
         "timestamp": datetime.utcnow().isoformat(),
     }), 200
+
+
+@gate_app.route("/auth/token", methods=["POST"])
+@_limiter.limit("10 per minute")
+def auth_token():
+    """Exchange raw GATE_API_KEY for a short-lived JWT.
+
+    Request body:
+        api_key: The raw GATE_API_KEY value
+
+    Response:
+        token: Signed JWT (HS256)
+        expires_in: Seconds until expiry (default 86400 = 24h)
+
+    Use the returned token as: Authorization: Bearer <token>
+    """
+    if not config.GATE_API_KEY:
+        return jsonify({"error": "Auth not configured"}), 503
+    try:
+        data = request.get_json(force=True) or {}
+        raw_key = str(data.get("api_key", ""))
+        if not hmac.compare_digest(raw_key, config.GATE_API_KEY):
+            logger.warning(f"[HUMAN GATE] Failed token request from {request.remote_addr}")
+            return jsonify({"error": "Unauthorised"}), 401
+
+        expiry = config.GATE_TOKEN_EXPIRY
+        now = datetime.now(timezone.utc)
+        token = pyjwt.encode(
+            {"sub": "admin", "iat": now, "exp": now + timedelta(seconds=expiry)},
+            config.GATE_API_KEY,
+            algorithm="HS256",
+        )
+        logger.info(f"[HUMAN GATE] JWT issued to {request.remote_addr} (expires {expiry}s)")
+        return jsonify({"token": token, "expires_in": expiry}), 200
+    except Exception as e:
+        logger.error(f"[HUMAN GATE] Token error: {e}")
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @gate_app.route("/approve/<int:experiment_id>", methods=["POST"])

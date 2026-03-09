@@ -29,7 +29,7 @@ Usage:
 import json
 import logging
 import threading
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from flask import Flask, request, jsonify
 from flask_limiter import Limiter
 from flask_limiter.util import get_remote_address
@@ -53,18 +53,46 @@ def _security_headers(response):
     response.headers["Cache-Control"] = "no-store"
     return response
 
-# Rate limiting — prevent runaway OpenAI spend from request floods.
+# Rate limiting — Redis-backed when REDIS_URL is set, in-memory fallback.
 # Retell sends ~1 request per conversation turn; 120/min is generous headroom.
+_storage_uri = config.REDIS_URL if config.REDIS_URL else "memory://"
 _limiter = Limiter(
     app=voice_app,
     key_func=get_remote_address,
     default_limits=[],       # No blanket limit — applied per route below
-    storage_uri="memory://",
+    storage_uri=_storage_uri,
 )
 
 # In-memory call context store — lock guards concurrent access from Retell
 _call_contexts: dict = {}
 _ctx_lock = threading.Lock()
+_CTX_MAX_AGE_HOURS = 2  # Evict contexts older than this (memory + info-disclosure fix)
+
+
+def _cleanup_stale_contexts():
+    """Background loop: evict call contexts that are more than 2 hours old.
+
+    Runs every 30 minutes. Prevents unbounded memory growth and ensures
+    stale lead data isn't kept in-process longer than necessary.
+    """
+    while True:
+        threading.Event().wait(1800)  # 30-minute interval
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=_CTX_MAX_AGE_HOURS)
+        with _ctx_lock:
+            stale = [
+                cid for cid, ctx in _call_contexts.items()
+                if datetime.fromisoformat(ctx.get("started_at", "2000-01-01")).replace(
+                    tzinfo=timezone.utc
+                ) < cutoff
+            ]
+            for cid in stale:
+                del _call_contexts[cid]
+        if stale:
+            logger.info(f"[VOICE] Evicted {len(stale)} stale call context(s)")
+
+
+# Start cleanup thread as daemon so it doesn't block shutdown
+threading.Thread(target=_cleanup_stale_contexts, daemon=True, name="ctx-cleanup").start()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SYSTEM PROMPT BUILDER

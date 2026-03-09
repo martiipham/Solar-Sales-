@@ -42,6 +42,14 @@ SLACK_SIGNING_SECRET = get("SLACK_SIGNING_SECRET", "")  # For verifying interact
 # Set GATE_API_KEY in .env to enable. Requests must send: Authorization: Bearer <key>
 GATE_API_KEY = get("GATE_API_KEY", "")
 
+# JWT token expiry in seconds (default 24h). Tokens issued by POST /auth/token.
+GATE_TOKEN_EXPIRY = int(get("GATE_TOKEN_EXPIRY", "86400"))
+
+# Redis URL for rate limiter persistence across restarts and multiple processes.
+# If not set, in-memory storage is used (fine for single-server deployments).
+# Example: redis://localhost:6379/0
+REDIS_URL = get("REDIS_URL", "")
+
 # GHL webhook secret — validate inbound webhook payloads from GoHighLevel
 # Set in GHL → Settings → Webhooks → Signing Secret
 GHL_WEBHOOK_SECRET = get("GHL_WEBHOOK_SECRET", "")
