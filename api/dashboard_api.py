@@ -71,6 +71,11 @@ def _register_blueprints():
         # Seed defaults on startup
         seed_owner()
         seed_settings()
+
+        # Ensure KB tables exist before any API request hits them
+        from knowledge.company_kb import init_kb_tables
+        init_kb_tables()
+
         logger.info("[DASH API] All blueprints registered.")
     except Exception as e:
         logger.error(f"[DASH API] Blueprint registration failed: {e}")
@@ -281,7 +286,7 @@ def voice_status():
         eleven_ok = bool(config.get("ELEVENLABS_API_KEY", ""))
         agent_row = fetch_one(
             "SELECT retell_agent_id FROM company_profiles "
-            "WHERE retell_agent_id IS NOT NULL AND active = 1 LIMIT 1"
+            "WHERE retell_agent_id IS NOT NULL LIMIT 1"
         )
         has_agent = bool(agent_row)
         status = "live" if (retell_ok and has_agent) else "needs_setup" if retell_ok else "offline"
