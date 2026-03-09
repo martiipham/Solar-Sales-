@@ -47,7 +47,7 @@ def _call_metrics(since: str, until: str) -> dict:
     row = fetch_one(
         "SELECT COUNT(*) as total, "
         "SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) as completed, "
-        "AVG(duration) as avg_duration, "
+        "AVG(duration_seconds) as avg_duration, "
         "AVG(lead_score) as avg_score "
         "FROM call_logs WHERE started_at >= ? AND started_at < ?",
         (since, until),
