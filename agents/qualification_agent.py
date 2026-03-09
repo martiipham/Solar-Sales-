@@ -71,6 +71,11 @@ def qualify(lead_data: dict, lead_id: int = None) -> dict:
         log_lead_qualified(lead_id, score, action)
 
     _send_alerts(name, score, result.get("reason", ""), action, lead_data)
+
+    # Fire an outbound call for hot leads when Retell is configured
+    if action == "call_now" and lead_data.get("phone"):
+        _trigger_outbound_call(lead_data, lead_id)
+
     print(f"[QUALIFICATION] {name}: {score}/10 → {action}")
     return result
 
@@ -196,6 +201,57 @@ def _save_to_lead(lead_id: int, result: dict):
         "recommended_action": result.get("recommended_action"),
         "status": "qualified",
     })
+
+
+def _trigger_outbound_call(lead_data: dict, lead_id: int | None = None):
+    """Initiate a Retell outbound call to a hot lead.
+
+    Looks up the client's Retell agent from the company profile,
+    then fires a call with lead context injected as metadata.
+
+    Args:
+        lead_data: Lead dict with phone, name, client_account, etc.
+        lead_id: Optional database lead id for metadata
+    """
+    if not config.retell_configured():
+        logger.debug("[QUALIFICATION] Retell not configured — skipping outbound call")
+        return
+
+    try:
+        from voice.retell_client import create_outbound_call
+        from knowledge.company_kb import get_company
+
+        client_id = lead_data.get("client_account") or config.DEFAULT_CLIENT_ID
+        profile   = get_company(client_id) or {}
+        agent_id  = profile.get("retell_agent_id")
+        from_phone = profile.get("phone")
+
+        if not agent_id or not from_phone:
+            logger.warning(f"[QUALIFICATION] No Retell agent/phone for client '{client_id}' — skipping outbound call")
+            return
+
+        to_phone = lead_data.get("phone", "")
+        if not to_phone.startswith("+"):
+            to_phone = "+61" + to_phone.lstrip("0")
+
+        metadata = {
+            "lead_id":    lead_id,
+            "client_id":  client_id,
+            "lead_name":  lead_data.get("name", ""),
+            "call_type":  "outbound_callback",
+        }
+
+        result = create_outbound_call(from_phone, to_phone, agent_id, metadata)
+        if result:
+            call_id = result.get("call_id", "?")
+            print(f"[QUALIFICATION] Outbound call fired: {to_phone} (call={call_id})")
+            if lead_id:
+                update("leads", lead_id, {"status": "called", "notes": f"Outbound call initiated: {call_id}"})
+        else:
+            logger.warning(f"[QUALIFICATION] Outbound call failed for {to_phone}")
+
+    except Exception as e:
+        logger.error(f"[QUALIFICATION] Outbound call error: {e}")
 
 
 def _send_alerts(name: str, score: float, reason: str, action: str, lead_data: dict):
