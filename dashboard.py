@@ -981,6 +981,81 @@ def panel_knowledge_graph(d: dict) -> Panel:
     return Panel(t, title="[bold]KNOWLEDGE GRAPH  |  DATA COLLECTION  |  TIME SERIES[/]", border_style="dim", box=box.ROUNDED, padding=(0, 1))
 
 
+def panel_config_status() -> Panel:
+    """Show API key configuration status — highlights missing required keys."""
+    import config
+
+    REQUIRED = [
+        ("OPENAI_API_KEY",  config.OPENAI_API_KEY,  "OpenAI"),
+        ("GHL_API_KEY",     config.GHL_API_KEY,     "GoHighLevel API"),
+        ("GHL_LOCATION_ID", config.GHL_LOCATION_ID, "GHL Location ID"),
+    ]
+    OPTIONAL = [
+        ("SLACK_WEBHOOK_URL",  config.SLACK_WEBHOOK_URL,  "Slack Webhook"),
+        ("SLACK_BOT_TOKEN",    config.SLACK_BOT_TOKEN,    "Slack Bot Token"),
+        ("RETELL_API_KEY",     config.RETELL_API_KEY,     "Retell Voice AI"),
+        ("ELEVENLABS_API_KEY", config.ELEVENLABS_API_KEY, "ElevenLabs"),
+        ("GHL_PIPELINE_ID",    config.GHL_PIPELINE_ID,    "GHL Pipeline ID"),
+        ("HUBSPOT_API_KEY",    config.HUBSPOT_API_KEY,    "HubSpot"),
+        ("IMAP_HOST",          config.IMAP_HOST,          "Email (IMAP)"),
+    ]
+
+    _PLACEHOLDERS = {"sk-your-openai-key-here", "your-ghl-api-key-here", "your-ghl-location-id-here"}
+
+    def mask(val: str) -> str:
+        """Show first 4 + last 4 chars only."""
+        if not val:
+            return ""
+        return val[:4] + "…" + val[-4:] if len(val) > 8 else "****"
+
+    def is_set(val: str) -> bool:
+        return bool(val) and val not in _PLACEHOLDERS
+
+    t = Table.grid(padding=(0, 2))
+    t.add_column(min_width=22)
+    t.add_column(min_width=20)
+    t.add_column(min_width=22)
+    t.add_column()
+
+    t.add_row(
+        Text("REQUIRED KEYS", style="bold dim"), Text(""),
+        Text("OPTIONAL KEYS", style="bold dim"), Text(""),
+    )
+
+    for i in range(max(len(REQUIRED), len(OPTIONAL))):
+        if i < len(REQUIRED):
+            _, val, label = REQUIRED[i]
+            req_cell = Text(f"✓  {label}", style="bright_green") if is_set(val) else Text(f"✗  {label}", style="bold red")
+            req_val  = Text(mask(val), style="dim") if is_set(val) else Text("NOT SET", style="bold red")
+        else:
+            req_cell = req_val = Text("")
+
+        if i < len(OPTIONAL):
+            _, val, label = OPTIONAL[i]
+            opt_cell = Text(f"✓  {label}", style="green") if is_set(val) else Text(f"○  {label}", style="dim")
+            opt_val  = Text(mask(val), style="dim") if is_set(val) else Text("not set", style="dim")
+        else:
+            opt_cell = opt_val = Text("")
+
+        t.add_row(req_cell, req_val, opt_cell, opt_val)
+
+    all_set = all(is_set(v) for _, v, _ in REQUIRED)
+    hint = Text(
+        "  All required keys configured — run: python cli.py configure  to update." if all_set
+        else "  ⚠  Required keys missing — run:  python cli.py configure",
+        style="dim" if all_set else "bold yellow",
+    )
+
+    from rich.console import Group
+    return Panel(
+        Group(t, hint),
+        title="[bold]API CONFIGURATION[/]",
+        border_style="dim" if all_set else "red",
+        box=box.ROUNDED,
+        padding=(0, 1),
+    )
+
+
 def panel_footer(d: dict, interval: int = 5, watch: bool = False) -> Panel:
     now = d.get("now", datetime.now())
     t = Text()
@@ -1047,6 +1122,9 @@ def render(d: dict, interval: int = 5, watch: bool = False) -> None:
 
     # ── Row 8: Knowledge Graph + Data Collection + Time Series
     console.print(panel_knowledge_graph(d))
+
+    # ── Row 9: API Configuration Status
+    console.print(panel_config_status())
 
     # ── Footer
     console.print(panel_footer(d, interval=interval, watch=watch))
