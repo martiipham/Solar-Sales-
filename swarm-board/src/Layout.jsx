@@ -43,6 +43,7 @@ const NAV_ITEMS = [
   { icon: "⚗",  label: "Experiments",   page: "experiments",   minRole: "admin"  },
   { icon: "—",  label: null,             page: null,            minRole: "admin"  }, // separator
   { icon: "🚀", label: "Onboarding",    page: "onboarding",    minRole: "client" },
+  { icon: "📄", label: "Docs",           page: "docs",          minRole: "admin"  },
   { icon: "⚙",  label: "Settings",      page: "settings",      minRole: "admin"  },
   { icon: "🏢", label: "Companies",      page: "companies",     minRole: "admin"  },
   { icon: "👥", label: "Users",          page: "users",         minRole: "owner"  },

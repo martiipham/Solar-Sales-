@@ -21,6 +21,7 @@ import ClientDashboard from "./pages/ClientDashboard";
 import CallsPage from "./pages/CallsPage";
 import KnowledgeBasePage from "./pages/KnowledgeBasePage";
 import OnboardingPage from "./pages/OnboardingPage";
+import DocsPage from "./pages/DocsPage";
 
 // Pages that require a minimum role
 const ROLE_RANK = { client: 0, admin: 1, owner: 2 };
@@ -32,6 +33,7 @@ const PAGE_MIN_ROLE = {
   board:           "admin",
   leads:           "admin",
   experiments:     "admin",
+  docs:            "admin",
   settings:        "admin",
   companies:       "admin",
   users:           "owner",
@@ -128,6 +130,8 @@ export default function AppShell() {
         return <UsersPage />;
       case "apikeys":
         return <ApiKeysPage />;
+      case "docs":
+        return <DocsPage />;
       default:
         return role === "client"
           ? <ClientDashboard onNavigate={navigate} />
