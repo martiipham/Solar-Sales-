@@ -46,19 +46,27 @@ CORS(dashboard_app, origins=_cors_origins, supports_credentials=True)
 
 # ── Register feature blueprints ───────────────────────────────────────────────
 def _register_blueprints():
-    """Register auth, users, settings, company, and API key blueprints."""
+    """Register auth, users, settings, company, API key, and feature blueprints."""
     try:
         from api.auth import auth_bp, seed_owner
         from api.users_api import users_bp
         from api.settings_api import settings_bp, seed_settings
         from api.company_api import company_bp
         from api.apikeys_api import apikeys_bp
+        from api.calls_api import calls_bp
+        from api.kb_api import kb_bp
+        from api.reports_api import reports_bp
+        from api.onboarding_api import onboarding_bp
 
         dashboard_app.register_blueprint(auth_bp)
         dashboard_app.register_blueprint(users_bp)
         dashboard_app.register_blueprint(settings_bp)
         dashboard_app.register_blueprint(company_bp)
         dashboard_app.register_blueprint(apikeys_bp)
+        dashboard_app.register_blueprint(calls_bp)
+        dashboard_app.register_blueprint(kb_bp)
+        dashboard_app.register_blueprint(reports_bp)
+        dashboard_app.register_blueprint(onboarding_bp)
 
         # Seed defaults on startup
         seed_owner()
@@ -261,6 +269,31 @@ def circuit_breaker():
     except Exception as e:
         logger.error(f"[DASH API] circuit-breaker error: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+# ── Voice status ─────────────────────────────────────────────────────────────
+
+@dashboard_app.route("/api/voice/status", methods=["GET"])
+def voice_status():
+    """Return whether the voice AI is configured and active."""
+    try:
+        retell_ok = bool(config.get("RETELL_API_KEY", ""))
+        eleven_ok = bool(config.get("ELEVENLABS_API_KEY", ""))
+        agent_row = fetch_one(
+            "SELECT retell_agent_id FROM company_profiles "
+            "WHERE retell_agent_id IS NOT NULL AND active = 1 LIMIT 1"
+        )
+        has_agent = bool(agent_row)
+        status = "live" if (retell_ok and has_agent) else "needs_setup" if retell_ok else "offline"
+        return jsonify({
+            "status":      status,
+            "retell":      retell_ok,
+            "elevenlabs":  eleven_ok,
+            "agent_ready": has_agent,
+        }), 200
+    except Exception as e:
+        logger.error(f"[DASH API] voice/status error: {e}")
+        return jsonify({"status": "offline", "error": str(e)}), 500
 
 
 # ── Board state ───────────────────────────────────────────────────────────────

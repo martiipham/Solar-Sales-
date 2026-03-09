@@ -18,6 +18,8 @@ import CompanyPage from "./pages/CompanyPage";
 import UsersPage from "./pages/UsersPage";
 import ApiKeysPage from "./pages/ApiKeysPage";
 import ClientDashboard from "./pages/ClientDashboard";
+import LeadsPage from "./pages/LeadsPage";
+import ExperimentsPage from "./pages/ExperimentsPage";
 
 // Pages that require a minimum role
 const ROLE_RANK = { client: 0, admin: 1, owner: 2 };
@@ -113,11 +115,11 @@ export default function AppShell() {
     switch (activePage) {
       case "board":
       case "overview":
-      case "leads":
-      case "experiments":
-        // The existing App.jsx handles board + overview tabs internally.
-        // Pass the initial tab so it opens on the right view.
         return <App initialView={activePage === "board" ? "board" : "overview"} />;
+      case "leads":
+        return <LeadsPage />;
+      case "experiments":
+        return <ExperimentsPage />;
       case "settings":
         return <SettingsPage />;
       case "companies":
