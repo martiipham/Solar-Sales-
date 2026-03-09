@@ -23,6 +23,8 @@ import time
 from datetime import datetime
 from functools import wraps
 from flask import Flask, request, jsonify
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 from memory.database import update, fetch_all, fetch_one
 from memory.hot_memory import get_swarm_summary, get_pending_experiments
 from memory.cold_ledger import log_experiment_approved, log_experiment_killed
@@ -34,6 +36,24 @@ import config
 logger = logging.getLogger(__name__)
 
 gate_app = Flask(__name__)
+
+# Security headers on every response
+@gate_app.after_request
+def _security_headers(response):
+    """Attach security headers to every response."""
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+# Rate limiting — brute force protection on auth endpoints (20/min per IP)
+_limiter = Limiter(
+    app=gate_app,
+    key_func=get_remote_address,
+    default_limits=[],
+    storage_uri="memory://",
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -110,6 +130,7 @@ def health():
 
 
 @gate_app.route("/approve/<int:experiment_id>", methods=["POST"])
+@_limiter.limit("20 per minute")
 @_require_api_key
 def approve(experiment_id: int):
     """Approve an experiment and allocate budget.
@@ -133,6 +154,7 @@ def approve(experiment_id: int):
 
 
 @gate_app.route("/reject/<int:experiment_id>", methods=["POST"])
+@_limiter.limit("20 per minute")
 @_require_api_key
 def reject(experiment_id: int):
     """Reject an experiment with a reason.

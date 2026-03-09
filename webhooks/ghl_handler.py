@@ -23,6 +23,16 @@ logger = logging.getLogger(__name__)
 ghl_app = Flask(__name__)
 
 
+@ghl_app.after_request
+def _security_headers(response):
+    """Attach security headers to every response."""
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
+
 def _verify_ghl_signature(req) -> bool:
     """Verify GHL webhook signature using HMAC-SHA256.
 
@@ -107,7 +117,7 @@ def new_lead():
 
     except Exception as e:
         logger.error(f"[GHL WEBHOOK] new-lead error: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 500
+        return jsonify({"status": "error", "message": "Internal server error"}), 500
 
 
 @ghl_app.route("/webhook/call-complete", methods=["POST"])
@@ -141,7 +151,7 @@ def call_complete():
 
     except Exception as e:
         logger.error(f"[GHL WEBHOOK] call-complete error: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 500
+        return jsonify({"status": "error", "message": "Internal server error"}), 500
 
 
 @ghl_app.route("/webhook/form-submit", methods=["POST"])
@@ -178,7 +188,7 @@ def form_submit():
 
     except Exception as e:
         logger.error(f"[GHL WEBHOOK] form-submit error: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 500
+        return jsonify({"status": "error", "message": "Internal server error"}), 500
 
 
 @ghl_app.route("/webhook/stage-change", methods=["POST"])
@@ -217,7 +227,7 @@ def stage_change():
 
     except Exception as e:
         logger.error(f"[GHL WEBHOOK] stage-change error: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 500
+        return jsonify({"status": "error", "message": "Internal server error"}), 500
 
 
 def _extract_lead_data(data: dict) -> dict:

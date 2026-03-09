@@ -32,12 +32,42 @@ logger = logging.getLogger(__name__)
 
 dashboard_app = Flask(__name__)
 
-# Allow the Vite dev server and any local port 5173 variant
-CORS(dashboard_app, origins=[
+# CORS: allow Vite dev server + any configured FRONTEND_URL
+_cors_origins = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
     "http://localhost:4173",   # vite preview
-])
+]
+_frontend_url = os.environ.get("FRONTEND_URL", "").strip()
+if _frontend_url and _frontend_url not in _cors_origins:
+    _cors_origins.append(_frontend_url)
+
+CORS(dashboard_app, origins=_cors_origins, supports_credentials=True)
+
+# ── Register feature blueprints ───────────────────────────────────────────────
+def _register_blueprints():
+    """Register auth, users, settings, company, and API key blueprints."""
+    try:
+        from api.auth import auth_bp, seed_owner
+        from api.users_api import users_bp
+        from api.settings_api import settings_bp, seed_settings
+        from api.company_api import company_bp
+        from api.apikeys_api import apikeys_bp
+
+        dashboard_app.register_blueprint(auth_bp)
+        dashboard_app.register_blueprint(users_bp)
+        dashboard_app.register_blueprint(settings_bp)
+        dashboard_app.register_blueprint(company_bp)
+        dashboard_app.register_blueprint(apikeys_bp)
+
+        # Seed defaults on startup
+        seed_owner()
+        seed_settings()
+        logger.info("[DASH API] All blueprints registered.")
+    except Exception as e:
+        logger.error(f"[DASH API] Blueprint registration failed: {e}")
+
+_register_blueprints()
 
 # Path to board-state.json in project root /public/
 BOARD_STATE_PATH = os.path.join(

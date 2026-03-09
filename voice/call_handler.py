@@ -28,6 +28,7 @@ Usage:
 
 import json
 import logging
+import threading
 from datetime import datetime
 from flask import Flask, request, jsonify
 from flask_limiter import Limiter
@@ -42,6 +43,16 @@ logger = logging.getLogger(__name__)
 
 voice_app = Flask(__name__)
 
+# Security headers — applied to every response from this app
+@voice_app.after_request
+def _security_headers(response):
+    """Attach security headers to every response."""
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["Cache-Control"] = "no-store"
+    return response
+
 # Rate limiting — prevent runaway OpenAI spend from request floods.
 # Retell sends ~1 request per conversation turn; 120/min is generous headroom.
 _limiter = Limiter(
@@ -51,8 +62,9 @@ _limiter = Limiter(
     storage_uri="memory://",
 )
 
-# In-memory call context store (replace with Redis for multi-server)
+# In-memory call context store — lock guards concurrent access from Retell
 _call_contexts: dict = {}
+_ctx_lock = threading.Lock()
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SYSTEM PROMPT BUILDER
@@ -132,16 +144,17 @@ def call_started():
         to_phone     = data.get("to_number", "")
         client_id    = _resolve_client_id(to_phone)
 
-        # Initialise call context
-        _call_contexts[call_id] = {
-            "call_id":      call_id,
-            "client_id":    client_id,
-            "from_phone":   from_phone,
-            "to_phone":     to_phone,
-            "started_at":   datetime.utcnow().isoformat(),
-            "lead_data":    {"phone": from_phone},
-            "call_outcome": None,
-        }
+        # Initialise call context (lock guards concurrent Retell events)
+        with _ctx_lock:
+            _call_contexts[call_id] = {
+                "call_id":      call_id,
+                "client_id":    client_id,
+                "from_phone":   from_phone,
+                "to_phone":     to_phone,
+                "started_at":   datetime.utcnow().isoformat(),
+                "lead_data":    {"phone": from_phone},
+                "call_outcome": None,
+            }
 
         # Log to database
         _log_call(call_id, client_id, from_phone, "started")
@@ -151,7 +164,7 @@ def call_started():
 
     except Exception as e:
         logger.error(f"[VOICE] call-started error: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 500
+        return jsonify({"status": "error", "message": "Internal server error"}), 500
 
 
 @voice_app.route("/voice/response", methods=["POST"])
@@ -170,11 +183,12 @@ def retell_response():
         response_id      = data.get("response_id", 0)
 
         # Get or create call context
-        ctx = _call_contexts.get(call_id, {
-            "call_id": call_id,
-            "client_id": config.get("DEFAULT_CLIENT_ID", "default"),
-            "lead_data": {},
-        })
+        with _ctx_lock:
+            ctx = _call_contexts.get(call_id, {
+                "call_id": call_id,
+                "client_id": config.get("DEFAULT_CLIENT_ID", "default"),
+                "lead_data": {},
+            })
 
         if interaction_type == "update_only":
             return jsonify({"response_id": response_id}), 200
@@ -225,7 +239,8 @@ def retell_response():
             ]
             response_text, _ = _call_llm(messages_with_results, allow_tools=False)
 
-        _call_contexts[call_id] = ctx
+        with _ctx_lock:
+            _call_contexts[call_id] = ctx
         return jsonify({
             "response_id":      response_id,
             "content":          response_text,
@@ -271,13 +286,15 @@ def post_call():
             pass
 
         from voice.post_call import process_post_call
-        result = process_post_call(data, _call_contexts.pop(call_id, {}))
+        with _ctx_lock:
+            ctx_data = _call_contexts.pop(call_id, {})
+        result = process_post_call(data, ctx_data)
 
         return jsonify({"status": "processed", "result": result}), 200
 
     except Exception as e:
         logger.error(f"[VOICE] post-call error: {e}")
-        return jsonify({"status": "error", "message": str(e)}), 500
+        return jsonify({"status": "error", "message": "Internal server error"}), 500
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -297,11 +314,12 @@ def elevenlabs_response():
         messages   = data.get("messages", [])
         client_id  = data.get("metadata", {}).get("client_id", "default")
 
-        ctx = _call_contexts.get(session_id, {
-            "call_id":   session_id,
-            "client_id": client_id,
-            "lead_data": {},
-        })
+        with _ctx_lock:
+            ctx = _call_contexts.get(session_id, {
+                "call_id":   session_id,
+                "client_id": client_id,
+                "lead_data": {},
+            })
 
         system_msg = _build_system_prompt(client_id, session_id)
         gpt_msgs   = [{"role": "system", "content": system_msg}]
@@ -317,7 +335,8 @@ def elevenlabs_response():
             fn_args = json.loads(fc.get("function", {}).get("arguments", "{}"))
             execute_function(fn_name, fn_args, ctx)
 
-        _call_contexts[session_id] = ctx
+        with _ctx_lock:
+            _call_contexts[session_id] = ctx
         return jsonify({"content": response_text, "end_session": False}), 200
 
     except Exception as e:

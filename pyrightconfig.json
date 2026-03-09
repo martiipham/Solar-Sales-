@@ -2,8 +2,14 @@
   "pythonVersion": "3.11",
   "pythonPath": "/Library/Frameworks/Python.framework/Versions/3.11/bin/python3",
   "include": ["."],
-  "extraPaths": ["."],
+  "extraPaths": [
+    ".",
+    "/Users/martinpham/Downloads/Solar-Concept-main"
+  ],
   "reportMissingModuleSource": "none",
   "reportMissingImports": "none",
-  "reportMissingModuleAttribute": "none"
+  "reportMissingModuleAttribute": "none",
+  "reportAttributeAccessIssue": "none",
+  "reportPossiblyUnbound": "none",
+  "reportUnknownMemberType": "none"
 }

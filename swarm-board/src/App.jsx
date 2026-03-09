@@ -1,4 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import Confirm from "./components/Confirm";
+import InfoTip from "./components/InfoTip";
 
 /* ═══════════════════════════════════════════════════════════════
    SOLAR SWARM — AGENT COMMAND BOARD
@@ -315,30 +317,26 @@ function TaskCard({ task, onDragStart, onClick }) {
         </div>
       </div>
 
-      {/* RUN button — appears on hover */}
-      {hovered && (
-        <button
-          onClick={handleRun}
-          title="Open this task in Claude"
-          style={{
-            position:"absolute", top:8, right:8,
-            background: h(ag.color, 0.2),
-            border: `1px solid ${ag.color}`,
-            color: ag.color,
-            borderRadius: 5, padding: "2px 8px",
-            cursor: "pointer", fontSize: 10,
-            fontFamily: "'Syne Mono', monospace",
-            letterSpacing: 0.5,
-            display: "flex", alignItems: "center", gap: 4,
-            transition: "all .1s",
-            boxShadow: `0 0 8px ${h(ag.color, 0.3)}`,
-          }}
-          onMouseEnter={e => { e.currentTarget.style.background = h(ag.color, 0.35); }}
-          onMouseLeave={e => { e.currentTarget.style.background = h(ag.color, 0.2); }}
-        >
-          ▶ RUN
-        </button>
-      )}
+      {/* RUN button — always visible, brightens on hover */}
+      <button
+        onClick={handleRun}
+        title="Open this task in Claude"
+        style={{
+          position:"absolute", top:8, right:8,
+          background: hovered ? h(ag.color, 0.35) : h(ag.color, 0.15),
+          border: `1px solid ${hovered ? ag.color : h(ag.color, 0.45)}`,
+          color: hovered ? ag.color : h(ag.color, 0.7),
+          borderRadius: 5, padding: "2px 8px",
+          cursor: "pointer", fontSize: 10,
+          fontFamily: "'Syne Mono', monospace",
+          letterSpacing: 0.5,
+          display: "flex", alignItems: "center", gap: 4,
+          transition: "all .15s",
+          boxShadow: hovered ? `0 0 8px ${h(ag.color, 0.3)}` : "none",
+        }}
+      >
+        ▶ RUN
+      </button>
     </div>
   );
 }
@@ -633,7 +631,7 @@ function StatsBar({ tasks }) {
         ["CRITICAL",crits,crits>0?C.red:C.muted],["BLOCKED",blkd,blkd>0?C.red:C.muted]].map(([l,v,c])=>(
         <div key={l} style={{ textAlign:"center" }}>
           <div className="mono" style={{ fontSize:16,color:c,lineHeight:1 }}>{v}</div>
-          <div style={{ fontSize:8,color:C.muted,letterSpacing:1.5,textTransform:"uppercase" }}>{l}</div>
+          <div style={{ fontSize:11,color:C.muted,letterSpacing:1.5,textTransform:"uppercase" }}>{l}</div>
         </div>
       ))}
       <div style={{ display:"flex",alignItems:"center",gap:8,marginLeft:4 }}>
@@ -808,12 +806,17 @@ function OverviewPanel({ tasks }) {
         borderRadius:10,padding:"8px 16px" }}>
         <div style={{ display:"flex",alignItems:"center",gap:8 }}>
           <span style={{ width:7,height:7,borderRadius:"50%",
-            background: apiOnline ? C.green : C.muted,
-            boxShadow: apiOnline ? `0 0 6px ${C.green}` : "none",
+            background: apiOnline ? C.green : C.red,
+            boxShadow: apiOnline ? `0 0 6px ${C.green}` : `0 0 6px ${C.red}`,
             display:"inline-block" }}/>
-          <span className="mono" style={{ fontSize:10,color: apiOnline ? C.green : C.muted }}>
-            {apiOnline ? "SWARM API ONLINE" : "SWARM API OFFLINE — showing board data only"}
+          <span className="mono" style={{ fontSize:11,color: apiOnline ? C.green : C.red }}>
+            {apiOnline ? "SWARM API ONLINE" : "SWARM API OFFLINE"}
           </span>
+          {!apiOnline && (
+            <span style={{ fontSize:11,color:C.muted }}>
+              — Start the backend: <code style={{ color:C.amber,fontFamily:"monospace" }}>python main.py</code>
+            </span>
+          )}
         </div>
         <div style={{ display:"flex",alignItems:"center",gap:16 }}>
           <span style={{ fontSize:10,color:crmColors[activeCrm] }}>
@@ -829,13 +832,22 @@ function OverviewPanel({ tasks }) {
 
       {/* Stat cards — board tasks + live CRM if available */}
       <div style={{ display:"flex",gap:12,flexWrap:"wrap" }}>
-        {card("Total Tasks",   total,    C.text,   null)}
+        {card("Total Tasks",   total,    C.text,   "on this board")}
         {card("Completed",     done,     C.green,  `${pct}% done`)}
-        {card("In Progress",   inprog,   C.amber,  null)}
-        {card("Critical",      critical, critical>0?C.red:C.muted, "active")}
+        {card("In Progress",   inprog,   C.amber,  "active now")}
+        {card("Critical",      critical, critical>0?C.red:C.muted, "open items")}
+        {/* Skeleton placeholders while API loads */}
+        {!health && !apiDown && [1,2].map(i => (
+          <div key={i} style={{ background:C.card,border:`1px solid ${C.border}`,borderRadius:12,
+            padding:"18px 20px",flex:"1 1 140px" }}>
+            <div style={{ height:28,width:50,borderRadius:4,background:C.dim,marginBottom:8,
+              animation:"pulse 1.5s ease-in-out infinite" }}/>
+            <div style={{ height:10,width:80,borderRadius:4,background:C.dim }}/>
+          </div>
+        ))}
         {apiOnline && metrics.total_contacts > 0 && card("CRM Contacts", metrics.total_contacts, C.cyan, `+${metrics.new_this_week||0} this week`)}
         {apiOnline && metrics.conversion_rate > 0 && card("Conversion", `${metrics.conversion_rate}%`, C.purple, "of contacts")}
-        {!apiOnline && card("Blocked", blocked, blocked>0?C.red:C.muted, null)}
+        {!apiOnline && card("Blocked", blocked, blocked>0?C.red:C.muted, "tasks")}
       </div>
 
       {/* CRM pipeline stages — only when API online */}
@@ -904,7 +916,10 @@ function OverviewPanel({ tasks }) {
         {/* Agent workload */}
         <div style={{ flex:"2 1 320px",background:C.card,border:`1px solid ${C.border}`,
           borderRadius:12,padding:"16px 20px" }}>
-          <div className="mono" style={{ fontSize:10,color:C.muted,letterSpacing:1,marginBottom:14 }}>AGENT WORKLOAD</div>
+          <div style={{ display:"flex",alignItems:"center",gap:6,marginBottom:14 }}>
+            <span className="mono" style={{ fontSize:10,color:C.muted,letterSpacing:1 }}>AGENT WORKLOAD</span>
+            <InfoTip text="Tasks assigned to each agent across all columns. Tier 1 = The General (strategy), Tier 2 = Department Heads, Tier 3 = Workers." />
+          </div>
           {agentCounts.length === 0
             ? <div style={{ color:C.muted,fontSize:11 }}>No tasks assigned</div>
             : agentCounts.map(ag => (
@@ -933,7 +948,10 @@ function OverviewPanel({ tasks }) {
         {/* Priority + Category */}
         <div style={{ flex:"1 1 220px",display:"flex",flexDirection:"column",gap:16 }}>
           <div style={{ background:C.card,border:`1px solid ${C.border}`,borderRadius:12,padding:"16px 20px" }}>
-            <div className="mono" style={{ fontSize:10,color:C.muted,letterSpacing:1,marginBottom:12 }}>PRIORITY BREAKDOWN</div>
+            <div style={{ display:"flex",alignItems:"center",gap:6,marginBottom:12 }}>
+              <span className="mono" style={{ fontSize:10,color:C.muted,letterSpacing:1 }}>PRIORITY BREAKDOWN</span>
+              <InfoTip text="Active tasks only (excludes Done). CRITICAL = blocks revenue or security. HIGH = this week. NORMAL = this sprint. LOW = backlog." />
+            </div>
             {prioCounts.map(p => (
               <div key={p.id} style={{ display:"flex",justifyContent:"space-between",alignItems:"center",
                 marginBottom:8,padding:"6px 10px",borderRadius:6,
@@ -972,7 +990,10 @@ function OverviewPanel({ tasks }) {
             <div style={{ flex:"1 1 300px",background:C.card,border:`1px solid ${C.border}`,
               borderRadius:12,padding:"16px 20px" }}>
               <div style={{ display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:12 }}>
+                <span style={{ display:"flex",alignItems:"center",gap:6 }}>
                 <span className="mono" style={{ fontSize:10,color:C.muted,letterSpacing:1 }}>LIVE EXPERIMENTS</span>
+                <InfoTip text="Experiments are marketing/sales strategies run by the swarm. Confidence score (0–10): above 8.5 = auto-approved, 5–8.5 = needs human review, below 5 = auto-killed." position="left" />
+              </span>
                 <div style={{ display:"flex",gap:6,flexWrap:"wrap" }}>
                   {Object.entries(expCounts).map(([st, cnt]) => (
                     <span key={st} className="mono" style={{ fontSize:9,
@@ -1127,9 +1148,9 @@ function OverviewPanel({ tasks }) {
 }
 
 // ── App ───────────────────────────────────────────────────────
-export default function App() {
+export default function App({ initialView = "board" }) {
   const [tasks,        setTasks]        = useState(SEED_TASKS);
-  const [view,         setView]         = useState("board");
+  const [view,         setView]         = useState(initialView);
   const [loaded,       setLoaded]       = useState(false);
   const [draggingId,   setDraggingId]   = useState(null);
   const [editTask,     setEditTask]     = useState(null);
@@ -1138,9 +1159,11 @@ export default function App() {
   const [filterAgent,  setFilterAgent]  = useState(null);
   const [filterPrio,   setFilterPrio]   = useState(null);
   const [search,       setSearch]       = useState("");
-  const [showSidebar,  setShowSidebar]  = useState(true);
-  const [saving,       setSaving]       = useState(false);
-  const [lastSaved,    setLastSaved]    = useState(null);
+  const [showSidebar,   setShowSidebar]  = useState(true);
+  const [saving,        setSaving]       = useState(false);
+  const [lastSaved,     setLastSaved]    = useState(null);
+  const [confirmDelete, setConfirmDelete] = useState(null); // task id to delete
+  const [confirmReset,  setConfirmReset]  = useState(false);
 
   // Load from localStorage
   useEffect(() => {
@@ -1186,17 +1209,25 @@ export default function App() {
   }, [tasks, updateTasks]);
 
   const handleDeleteTask = useCallback((id) => {
-    updateTasks(tasks.filter(t=>t.id!==id));
+    setConfirmDelete(id);
+  }, []);
+
+  const doDeleteTask = useCallback(() => {
+    if (!confirmDelete) return;
+    updateTasks(tasks.filter(t => t.id !== confirmDelete));
     setEditTask(null);
-  }, [tasks, updateTasks]);
+    setConfirmDelete(null);
+  }, [confirmDelete, tasks, updateTasks]);
 
   const handleAddTasks = useCallback((newTasks) => {
     updateTasks([...tasks,...newTasks]);
   }, [tasks, updateTasks]);
 
-  const resetBoard = () => {
-    if (!window.confirm("Reset board to default tasks?")) return;
+  const resetBoard = () => setConfirmReset(true);
+
+  const doResetBoard = () => {
     updateTasks(SEED_TASKS);
+    setConfirmReset(false);
   };
 
   const visible = tasks.filter(t => {
@@ -1332,6 +1363,28 @@ export default function App() {
       {editTask    &&<TaskModal    task={editTask} onSave={handleSaveTask} onDelete={handleDeleteTask} onClose={()=>setEditTask(null)}/>}
       {showAI      &&<AIPanel      tasks={tasks} onAddTasks={handleAddTasks} onClose={()=>setShowAI(false)}/>}
       {showSettings&&<SettingsModal onClose={()=>setShowSettings(false)}/>}
+
+      {/* Confirm: delete task */}
+      <Confirm
+        open={!!confirmDelete}
+        title="Delete this task?"
+        message="This task will be permanently removed from the board."
+        confirmLabel="DELETE"
+        danger
+        onConfirm={doDeleteTask}
+        onCancel={()=>setConfirmDelete(null)}
+      />
+
+      {/* Confirm: reset board */}
+      <Confirm
+        open={confirmReset}
+        title="Reset board to defaults?"
+        message="All current tasks will be replaced with the default seed tasks. This cannot be undone."
+        confirmLabel="RESET"
+        danger
+        onConfirm={doResetBoard}
+        onCancel={()=>setConfirmReset(false)}
+      />
     </div>
   );
 }
