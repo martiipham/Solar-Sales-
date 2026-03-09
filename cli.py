@@ -440,6 +440,110 @@ def cmd_ab_tests():
     print()
 
 
+def cmd_configure():
+    """Interactive wizard to set API keys and save them to .env."""
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+
+    # Load existing values
+    current = {}
+    if os.path.exists(env_path):
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, _, v = line.partition("=")
+                    current[k.strip()] = v.strip()
+
+    def mask(val):
+        """Mask key value for display."""
+        if not val:
+            return ""
+        return val[:4] + "…" + val[-4:] if len(val) > 8 else "****"
+
+    def ask(env_key, label, required=False):
+        """Prompt for a value, returning existing if user presses Enter."""
+        cur  = current.get(env_key, "")
+        hint = f" [{mask(cur)}]" if cur else " [not set]"
+        tag  = " (REQUIRED)" if required else " (optional)"
+        try:
+            val = input(f"  {label}{tag}{hint}: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return cur
+        return val if val else cur
+
+    print("\n" + "=" * 55)
+    print("  SOLAR SWARM — API CONFIGURATION WIZARD")
+    print("  Press Enter to keep the existing value.")
+    print("=" * 55)
+
+    print("\n── REQUIRED ───────────────────────────────────────────")
+    current["OPENAI_API_KEY"]  = ask("OPENAI_API_KEY",  "OpenAI API Key",      required=True)
+    current["GHL_API_KEY"]     = ask("GHL_API_KEY",     "GoHighLevel API Key", required=True)
+    current["GHL_LOCATION_ID"] = ask("GHL_LOCATION_ID", "GHL Location ID",     required=True)
+
+    print("\n── SLACK ──────────────────────────────────────────────")
+    current["SLACK_WEBHOOK_URL"]     = ask("SLACK_WEBHOOK_URL",     "Slack Incoming Webhook URL")
+    current["SLACK_BOT_TOKEN"]       = ask("SLACK_BOT_TOKEN",       "Slack Bot Token (xoxb-...)")
+    current["SLACK_DEFAULT_CHANNEL"] = ask("SLACK_DEFAULT_CHANNEL", "Slack Default Channel")
+    current["SLACK_SIGNING_SECRET"]  = ask("SLACK_SIGNING_SECRET",  "Slack Signing Secret")
+
+    print("\n── VOICE AI ───────────────────────────────────────────")
+    current["RETELL_API_KEY"]          = ask("RETELL_API_KEY",          "Retell AI API Key")
+    current["RETELL_DEFAULT_VOICE_ID"] = ask("RETELL_DEFAULT_VOICE_ID", "Retell Default Voice ID")
+    current["ELEVENLABS_API_KEY"]      = ask("ELEVENLABS_API_KEY",      "ElevenLabs API Key")
+    current["VOICE_WEBHOOK_BASE_URL"]  = ask("VOICE_WEBHOOK_BASE_URL",  "Voice Webhook Base URL")
+    current["TRANSFER_PHONE"]          = ask("TRANSFER_PHONE",          "Transfer Phone (+61...)")
+
+    print("\n── GHL EXTRAS ─────────────────────────────────────────")
+    current["GHL_PIPELINE_ID"] = ask("GHL_PIPELINE_ID", "GHL Pipeline ID")
+
+    print("\n── EMAIL (IMAP) ───────────────────────────────────────")
+    current["IMAP_HOST"] = ask("IMAP_HOST", "IMAP Host (e.g. imap.gmail.com)")
+    current["IMAP_USER"] = ask("IMAP_USER", "IMAP Username")
+    current["IMAP_PASS"] = ask("IMAP_PASS", "IMAP Password")
+
+    print("\n── BUDGET & PORTS ─────────────────────────────────────")
+    current["WEEKLY_BUDGET_AUD"]  = ask("WEEKLY_BUDGET_AUD",  "Weekly Budget AUD")
+    current["PORT_HUMAN_GATE"]    = ask("PORT_HUMAN_GATE",    "Port: Human Gate")
+    current["PORT_GHL_WEBHOOKS"]  = ask("PORT_GHL_WEBHOOKS",  "Port: GHL Webhooks")
+    current["PORT_VOICE_WEBHOOK"] = ask("PORT_VOICE_WEBHOOK", "Port: Voice Webhook")
+    current["PORT_DASHBOARD_API"] = ask("PORT_DASHBOARD_API", "Port: Dashboard API")
+    current["DATABASE_PATH"]      = ask("DATABASE_PATH",      "Database Path")
+    current["LOG_LEVEL"]          = ask("LOG_LEVEL",          "Log Level (INFO/DEBUG)")
+
+    # Write structured .env file
+    sections = [
+        ("OpenAI",          ["OPENAI_API_KEY", "OPENAI_MODEL"]),
+        ("GoHighLevel",     ["GHL_API_KEY", "GHL_LOCATION_ID", "GHL_PIPELINE_ID"]),
+        ("Slack",           ["SLACK_WEBHOOK_URL", "SLACK_BOT_TOKEN", "SLACK_DEFAULT_CHANNEL", "SLACK_SIGNING_SECRET"]),
+        ("Voice AI",        ["RETELL_API_KEY", "RETELL_DEFAULT_VOICE_ID", "ELEVENLABS_API_KEY",
+                             "ELEVENLABS_DEFAULT_VOICE", "VOICE_WEBHOOK_BASE_URL", "TRANSFER_PHONE", "DEFAULT_CLIENT_ID"]),
+        ("Email (IMAP)",    ["IMAP_HOST", "IMAP_USER", "IMAP_PASS", "IMAP_FOLDER"]),
+        ("HubSpot",         ["HUBSPOT_API_KEY"]),
+        ("Budget & Ports",  ["WEEKLY_BUDGET_AUD", "PORT_HUMAN_GATE", "PORT_GHL_WEBHOOKS",
+                             "PORT_VOICE_WEBHOOK", "PORT_DASHBOARD_API"]),
+        ("Database",        ["DATABASE_PATH", "LOG_LEVEL"]),
+    ]
+
+    lines = [
+        "# Solar Swarm — Environment Variables\n",
+        f"# Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n",
+        "# NEVER commit this file to version control\n\n",
+    ]
+    for title, keys in sections:
+        lines.append(f"# {title}\n")
+        for k in keys:
+            lines.append(f"{k}={current.get(k, '')}\n")
+        lines.append("\n")
+
+    with open(env_path, "w") as f:
+        f.writelines(lines)
+
+    print(f"\n  ✓ Saved to {env_path}")
+    print("  Run: python dashboard.py  to verify configuration status\n")
+
+
 def cmd_mutate():
     """Run the mutation engine now to evolve underperforming strategies."""
     print("\n  Running mutation engine...")
