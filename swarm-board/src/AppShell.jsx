@@ -4,7 +4,7 @@
  * Routing is hash-based (#/board, #/settings, etc.) — no react-router needed.
  * Handles:
  *   - Auth gate: shows LoginScreen until user is authenticated
- *   - Role-based redirect: clients land on /client, others on /overview
+ *   - Role-based redirect: clients land on /overview, others on /overview
  *   - Layout + page rendering
  *   - Fallback to default page for unknown routes
  */
@@ -12,27 +12,30 @@ import { useState, useEffect } from "react";
 import { useAuth } from "./AuthContext";
 import LoginScreen from "./LoginScreen";
 import Layout from "./Layout";
-import App from "./App";                                  // Board + Overview (existing)
+import App from "./App";
 import SettingsPage from "./pages/SettingsPage";
 import CompanyPage from "./pages/CompanyPage";
 import UsersPage from "./pages/UsersPage";
 import ApiKeysPage from "./pages/ApiKeysPage";
 import ClientDashboard from "./pages/ClientDashboard";
-import LeadsPage from "./pages/LeadsPage";
-import ExperimentsPage from "./pages/ExperimentsPage";
+import CallsPage from "./pages/CallsPage";
+import KnowledgeBasePage from "./pages/KnowledgeBasePage";
+import OnboardingPage from "./pages/OnboardingPage";
 
 // Pages that require a minimum role
 const ROLE_RANK = { client: 0, admin: 1, owner: 2 };
 const PAGE_MIN_ROLE = {
-  board:       "admin",
-  overview:    "client",
-  leads:       "admin",
-  experiments: "admin",
-  settings:    "admin",
-  companies:   "admin",
-  users:       "owner",
-  apikeys:     "owner",
-  client:      "client",
+  overview:        "client",
+  calls:           "client",
+  "knowledge-base": "client",
+  onboarding:      "client",
+  board:           "admin",
+  leads:           "admin",
+  experiments:     "admin",
+  settings:        "admin",
+  companies:       "admin",
+  users:           "owner",
+  apikeys:         "owner",
 };
 
 function canAccess(userRole, page) {
@@ -41,7 +44,6 @@ function canAccess(userRole, page) {
 }
 
 function defaultPage(role) {
-  if (role === "client") return "client";
   return "overview";
 }
 
@@ -74,23 +76,19 @@ function LoadingScreen() {
 export default function AppShell() {
   const { user, loading } = useAuth();
 
-  // Derive active page from URL hash
   const [page, setPage] = useState(getHashPage);
 
-  // Sync page ↔ hash
   useEffect(() => {
     const onHash = () => setPage(getHashPage());
     window.addEventListener("hashchange", onHash);
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
-  // Redirect to default page after login or if hash is empty/inaccessible
   useEffect(() => {
     if (!user) return;
     const role = user.role;
-    const target = page || defaultPage(role);
     if (!page || !canAccess(role, page)) {
-      const dest = canAccess(role, page) ? page : defaultPage(role);
+      const dest = defaultPage(role);
       window.location.hash = dest;
       setPage(dest);
     }
@@ -101,25 +99,27 @@ export default function AppShell() {
     setPage(p);
   };
 
-  // 1. Still validating stored token
   if (loading) return <LoadingScreen />;
+  if (!user)   return <LoginScreen />;
 
-  // 2. Not logged in
-  if (!user) return <LoginScreen />;
-
-  // 3. Authenticated — render page inside Layout
-  const role = user.role;
+  const role       = user.role;
   const activePage = (page && canAccess(role, page)) ? page : defaultPage(role);
 
   const renderPage = () => {
     switch (activePage) {
-      case "board":
       case "overview":
-        return <App initialView={activePage === "board" ? "board" : "overview"} />;
-      case "leads":
-        return <LeadsPage />;
-      case "experiments":
-        return <ExperimentsPage />;
+        // Clients see the AI-focused dashboard; admins/owners see the swarm overview
+        return role === "client"
+          ? <ClientDashboard onNavigate={navigate} />
+          : <App initialView="overview" />;
+      case "board":
+        return <App initialView="board" />;
+      case "calls":
+        return <CallsPage />;
+      case "knowledge-base":
+        return <KnowledgeBasePage />;
+      case "onboarding":
+        return <OnboardingPage onNavigate={navigate} />;
       case "settings":
         return <SettingsPage />;
       case "companies":
@@ -128,10 +128,10 @@ export default function AppShell() {
         return <UsersPage />;
       case "apikeys":
         return <ApiKeysPage />;
-      case "client":
-        return <ClientDashboard />;
       default:
-        return <App initialView="overview" />;
+        return role === "client"
+          ? <ClientDashboard onNavigate={navigate} />
+          : <App initialView="overview" />;
     }
   };
 

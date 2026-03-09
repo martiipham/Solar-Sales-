@@ -1239,7 +1239,7 @@ export default function App({ initialView = "board" }) {
   });
 
   if (!loaded) return (
-    <div style={{ background:C.bg,height:"100vh",display:"flex",alignItems:"center",justifyContent:"center" }}>
+    <div style={{ background:C.bg,height:"100%",display:"flex",alignItems:"center",justifyContent:"center" }}>
       <div className="mono" style={{ color:C.amber,fontSize:12,letterSpacing:2,animation:"blink 1s step-end infinite" }}>
         LOADING BOARD…
       </div>
@@ -1247,21 +1247,13 @@ export default function App({ initialView = "board" }) {
   );
 
   return (
-    <div style={{ background:C.bg,height:"100vh",display:"flex",flexDirection:"column",color:C.text }}>
+    <div style={{ background:C.bg,height:"100%",display:"flex",flexDirection:"column",color:C.text }}>
       <style>{STYLES}</style>
 
       {/* Header */}
       <header style={{ background:C.panel,borderBottom:`1px solid ${C.border}`,padding:"11px 20px",
         display:"flex",alignItems:"center",justifyContent:"space-between",gap:12,flexWrap:"wrap",flexShrink:0 }}>
         <div style={{ display:"flex",alignItems:"center",gap:14 }}>
-          <div style={{ display:"flex",alignItems:"center",gap:8 }}>
-            <span style={{ fontSize:22 }}>☀️</span>
-            <div>
-              <div className="mono" style={{ fontSize:14,color:C.amber,letterSpacing:2 }}>SOLAR SWARM</div>
-              <div style={{ fontSize:9,color:C.muted,letterSpacing:1.5,textTransform:"uppercase" }}>Agent Command Board</div>
-            </div>
-          </div>
-          <div style={{ width:1,height:30,background:C.border }}/>
           <StatsBar tasks={tasks}/>
         </div>
 

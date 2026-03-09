@@ -34,15 +34,19 @@ const h = (col, a) => col + Math.round(a * 255).toString(16).padStart(2, "0");
 
 // Nav items — icon, label, page key, min role
 const NAV_ITEMS = [
-  { icon: "◈", label: "Overview",     page: "overview",  minRole: "client" },
-  { icon: "◫", label: "Board",        page: "board",     minRole: "admin"  },
-  { icon: "◎", label: "Leads",        page: "leads",     minRole: "admin"  },
-  { icon: "⚗", label: "Experiments",  page: "experiments", minRole: "admin" },
-  { icon: "—", label: null,           page: null,        minRole: "admin"  }, // separator
-  { icon: "⚙", label: "Settings",    page: "settings",  minRole: "admin"  },
-  { icon: "🏢", label: "Companies",   page: "companies", minRole: "admin"  },
-  { icon: "👥", label: "Users",       page: "users",     minRole: "owner"  },
-  { icon: "🔑", label: "API Keys",    page: "apikeys",   minRole: "owner"  },
+  { icon: "◈",  label: "Overview",       page: "overview",      minRole: "client" },
+  { icon: "📞", label: "Calls",          page: "calls",         minRole: "client" },
+  { icon: "📚", label: "Knowledge Base", page: "knowledge-base", minRole: "client" },
+  { icon: "—",  label: null,             page: null,            minRole: "client" }, // separator
+  { icon: "◫",  label: "Board",          page: "board",         minRole: "admin"  },
+  { icon: "◎",  label: "Leads",          page: "leads",         minRole: "admin"  },
+  { icon: "⚗",  label: "Experiments",   page: "experiments",   minRole: "admin"  },
+  { icon: "—",  label: null,             page: null,            minRole: "admin"  }, // separator
+  { icon: "🚀", label: "Onboarding",    page: "onboarding",    minRole: "client" },
+  { icon: "⚙",  label: "Settings",      page: "settings",      minRole: "admin"  },
+  { icon: "🏢", label: "Companies",      page: "companies",     minRole: "admin"  },
+  { icon: "👥", label: "Users",          page: "users",         minRole: "owner"  },
+  { icon: "🔑", label: "API Keys",       page: "apikeys",       minRole: "owner"  },
 ];
 
 const ROLE_RANK = { client: 0, admin: 1, owner: 2 };
