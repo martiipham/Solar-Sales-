@@ -18,6 +18,7 @@ Usage:
 import json
 import logging
 from datetime import datetime, timedelta
+from typing import Any
 
 import config
 from memory.database import get_conn, fetch_one, update as db_update, insert
@@ -115,7 +116,7 @@ def process_post_call(webhook_data: dict, call_ctx: dict) -> dict:
         _create_followup_task(ghl_id, merged, score, action, extracted)
 
     # ── Step 7: Update call_logs table
-    _finalise_call_log(call_id, duration_s, recording, merged, score)
+    _finalise_call_log(call_id, duration_s, recording, merged, score, transcript)
 
     # ── Step 8: Slack notification
     _notify_slack(merged, score, action, duration_s, extracted)
@@ -186,7 +187,7 @@ def _update_lead_record(db_id: int, data: dict, call_id: str, duration: int, rec
         duration: Call duration in seconds
         recording: Recording URL
     """
-    fields = {}
+    fields: dict[str, Any] = {}
     for key in ("name", "email", "suburb", "state", "homeowner_status",
                 "monthly_bill", "roof_type", "notes"):
         if data.get(key) is not None:
@@ -354,7 +355,7 @@ def _create_followup_task(ghl_id: str, data: dict, score, action: str, extracted
         logger.error(f"[POST-CALL] Task creation failed: {e}")
 
 
-def _finalise_call_log(call_id: str, duration: int, recording: str, data: dict, score):
+def _finalise_call_log(call_id: str, duration: int, recording: str, data: dict, score, transcript: list | None = None):
     """Update the call_logs record with final status.
 
     Args:
@@ -363,6 +364,7 @@ def _finalise_call_log(call_id: str, duration: int, recording: str, data: dict, 
         recording: Recording URL
         data: Lead data
         score: Lead score
+        transcript: List of transcript turn dicts (optional)
     """
     try:
         with get_conn() as conn:
@@ -374,6 +376,7 @@ def _finalise_call_log(call_id: str, duration: int, recording: str, data: dict, 
                    outcome = ?,
                    lead_score = ?,
                    summary = ?,
+                   transcript_text = ?,
                    ended_at = ?
                 WHERE call_id = ?""",
                 (
@@ -382,6 +385,7 @@ def _finalise_call_log(call_id: str, duration: int, recording: str, data: dict, 
                     data.get("call_outcome", "unknown"),
                     score,
                     data.get("call_summary", "")[:500],
+                    json.dumps(transcript or []),
                     datetime.utcnow().isoformat(),
                     call_id,
                 )
