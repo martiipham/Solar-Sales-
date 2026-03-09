@@ -1,0 +1,266 @@
+"""Dashboard API — Live data feed for the swarm-board React app.
+
+CORS-enabled Flask app served on PORT_DASHBOARD_API (default 5003).
+The React board polls these endpoints every 30 seconds to show live
+CRM data, swarm metrics, and experiment status without needing direct
+DB access in the browser.
+
+Endpoints:
+  GET /api/health              — service health + CRM connection status
+  GET /api/crm/status          — which CRM is active and configured
+  GET /api/crm/pipeline        — pipeline stages with contact counts
+  GET /api/crm/contacts        — recent contacts from cache
+  GET /api/crm/metrics         — conversion funnel metrics
+  GET /api/swarm/summary       — hot memory swarm overview
+  GET /api/swarm/experiments   — recent experiments (filterable by status)
+  GET /api/swarm/leads         — recent leads from DB
+  GET /api/board/state         — board-state.json + live DB overlay
+"""
+
+import json
+import logging
+import os
+from datetime import datetime
+
+from flask import Flask, jsonify, request
+from flask_cors import CORS
+
+import config
+from memory.database import fetch_all, fetch_one
+
+logger = logging.getLogger(__name__)
+
+dashboard_app = Flask(__name__)
+
+# Allow the Vite dev server and any local port 5173 variant
+CORS(dashboard_app, origins=[
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "http://localhost:4173",   # vite preview
+])
+
+# Path to board-state.json in project root /public/
+BOARD_STATE_PATH = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+    "public",
+    "board-state.json",
+)
+
+
+def _read_board_state() -> dict:
+    """Read board-state.json from disk, returning {} on any error."""
+    try:
+        with open(BOARD_STATE_PATH) as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+
+# ── Health ───────────────────────────────────────────────────────────────────
+
+@dashboard_app.route("/api/health", methods=["GET"])
+def health():
+    """Service health check with CRM connection status."""
+    try:
+        from integrations.crm_router import status as crm_status
+        crm = crm_status()
+    except Exception:
+        crm = {"active": "none", "ghl": False, "hubspot": False, "salesforce": False}
+
+    return jsonify({
+        "status": "ok",
+        "service": "dashboard-api",
+        "crm": crm,
+        "timestamp": datetime.utcnow().isoformat(),
+    }), 200
+
+
+# ── CRM endpoints ─────────────────────────────────────────────────────────────
+
+@dashboard_app.route("/api/crm/status", methods=["GET"])
+def crm_status_endpoint():
+    """Return which CRM is active and all configured integrations."""
+    try:
+        from integrations.crm_router import status as crm_status, active_crm, all_configured_crms
+        return jsonify({
+            "active": active_crm(),
+            "configured": all_configured_crms(),
+            "detail": crm_status(),
+        }), 200
+    except Exception as e:
+        logger.error(f"[DASH API] crm/status error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@dashboard_app.route("/api/crm/pipeline", methods=["GET"])
+def crm_pipeline():
+    """Return pipeline stages with contact counts.
+
+    Serves from SQLite cache (written by crm_sync every 30 min).
+    Falls back to a live CRM call if the cache is empty.
+    """
+    try:
+        rows = fetch_all(
+            "SELECT cache_key, cache_value, cached_at FROM crm_cache "
+            "WHERE cache_key LIKE 'pipeline_%' ORDER BY cached_at DESC LIMIT 100"
+        )
+        if rows:
+            seen = {}
+            for r in rows:
+                if r["cache_key"] not in seen:
+                    seen[r["cache_key"]] = json.loads(r["cache_value"])
+            return jsonify({
+                "source": "cache",
+                "stages": list(seen.values()),
+                "cached_at": rows[0]["cached_at"],
+            }), 200
+
+        # No cache — try live
+        from integrations.crm_router import get_pipeline_stages, active_crm
+        pipeline_id = config.get("GHL_PIPELINE_ID", "")
+        stages = get_pipeline_stages(pipeline_id)
+        return jsonify({"source": "live", "stages": stages, "crm": active_crm()}), 200
+
+    except Exception as e:
+        logger.error(f"[DASH API] crm/pipeline error: {e}")
+        return jsonify({"error": str(e), "stages": []}), 500
+
+
+@dashboard_app.route("/api/crm/contacts", methods=["GET"])
+def crm_contacts():
+    """Return recent contacts from the cache table."""
+    try:
+        limit = int(request.args.get("limit", 20))
+        rows = fetch_all(
+            "SELECT cache_key, cache_value, cached_at FROM crm_cache "
+            "WHERE cache_key LIKE 'contact_%' ORDER BY cached_at DESC LIMIT ?",
+            (limit,),
+        )
+        contacts = [json.loads(r["cache_value"]) for r in rows]
+        return jsonify({"contacts": contacts, "count": len(contacts)}), 200
+    except Exception as e:
+        logger.error(f"[DASH API] crm/contacts error: {e}")
+        return jsonify({"error": str(e), "contacts": []}), 500
+
+
+@dashboard_app.route("/api/crm/metrics", methods=["GET"])
+def crm_metrics():
+    """Return conversion funnel metrics from the cache."""
+    try:
+        row = fetch_one(
+            "SELECT cache_value FROM crm_cache "
+            "WHERE cache_key = 'metrics_summary' ORDER BY cached_at DESC LIMIT 1"
+        )
+        if row:
+            return jsonify({"source": "cache", "metrics": json.loads(row["cache_value"])}), 200
+
+        return jsonify({
+            "source": "empty",
+            "metrics": {
+                "total_contacts": 0,
+                "new_this_week": 0,
+                "pipeline_stages": [],
+                "conversion_rate": 0,
+                "synced_at": None,
+            },
+        }), 200
+    except Exception as e:
+        logger.error(f"[DASH API] crm/metrics error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+# ── Swarm endpoints ───────────────────────────────────────────────────────────
+
+@dashboard_app.route("/api/swarm/summary", methods=["GET"])
+def swarm_summary():
+    """Return the swarm hot memory summary."""
+    try:
+        from memory.hot_memory import get_swarm_summary
+        return jsonify(get_swarm_summary()), 200
+    except Exception as e:
+        logger.error(f"[DASH API] swarm/summary error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@dashboard_app.route("/api/swarm/experiments", methods=["GET"])
+def swarm_experiments():
+    """Return recent experiments, optionally filtered by status."""
+    try:
+        status_filter = request.args.get("status")
+        limit = int(request.args.get("limit", 15))
+        if status_filter:
+            rows = fetch_all(
+                "SELECT * FROM experiments WHERE status = ? ORDER BY created_at DESC LIMIT ?",
+                (status_filter, limit),
+            )
+        else:
+            rows = fetch_all(
+                "SELECT * FROM experiments ORDER BY created_at DESC LIMIT ?", (limit,)
+            )
+        return jsonify({"experiments": [dict(r) for r in rows], "count": len(rows)}), 200
+    except Exception as e:
+        logger.error(f"[DASH API] swarm/experiments error: {e}")
+        return jsonify({"error": str(e), "experiments": []}), 500
+
+
+@dashboard_app.route("/api/swarm/leads", methods=["GET"])
+def swarm_leads():
+    """Return recent leads from the database."""
+    try:
+        limit = int(request.args.get("limit", 20))
+        rows = fetch_all(
+            "SELECT id, name, qualification_score, recommended_action, status, created_at "
+            "FROM leads ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        )
+        return jsonify({"leads": [dict(r) for r in rows], "count": len(rows)}), 200
+    except Exception as e:
+        logger.error(f"[DASH API] swarm/leads error: {e}")
+        return jsonify({"error": str(e), "leads": []}), 500
+
+
+@dashboard_app.route("/api/swarm/circuit-breaker", methods=["GET"])
+def circuit_breaker():
+    """Return current circuit breaker state."""
+    try:
+        from capital.circuit_breaker import get_current_level, is_halted
+        return jsonify({
+            "level": get_current_level(),
+            "halted": is_halted(),
+        }), 200
+    except Exception as e:
+        logger.error(f"[DASH API] circuit-breaker error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+# ── Board state ───────────────────────────────────────────────────────────────
+
+@dashboard_app.route("/api/board/state", methods=["GET"])
+def board_state():
+    """Return board-state.json merged with live DB experiment and lead counts."""
+    try:
+        state = _read_board_state()
+
+        exp_rows = fetch_all(
+            "SELECT status, COUNT(*) as cnt FROM experiments GROUP BY status"
+        )
+        exp_counts = {r["status"]: r["cnt"] for r in exp_rows}
+
+        lead_row = fetch_one("SELECT COUNT(*) as cnt FROM leads")
+        lead_count = (dict(lead_row) if lead_row else {}).get("cnt", 0)
+
+        ab_row = fetch_one(
+            "SELECT COUNT(*) as cnt FROM ab_tests WHERE status = 'running'"
+        )
+        ab_running = (dict(ab_row) if ab_row else {}).get("cnt", 0)
+
+        state["liveStats"] = {
+            "experiments": exp_counts,
+            "totalLeads": lead_count,
+            "abTestsRunning": ab_running,
+            "generatedAt": datetime.utcnow().isoformat(),
+        }
+        return jsonify(state), 200
+    except Exception as e:
+        logger.error(f"[DASH API] board/state error: {e}")
+        return jsonify(_read_board_state()), 200

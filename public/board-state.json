@@ -1,0 +1,152 @@
+{
+  "lastUpdated": "2026-03-09T00:00:00Z",
+  "columns": {
+    "backlog": [
+      {
+        "id": "fix-ab-test-schema",
+        "title": "Fix A/B Test DB schema mismatch",
+        "description": "ab_tester.py references variant_a_impressions, variant_a_conversions, variant_b_impressions, variant_b_conversions, variant_a_clicks, variant_b_clicks columns that don't exist in the ab_tests table in memory/database.py",
+        "priority": "critical",
+        "touchedFiles": ["memory/database.py", "agents/ab_tester.py"],
+        "suggestedNext": false
+      },
+      {
+        "id": "fix-datacollect-normalized",
+        "title": "Fix data collection 'normalized' vs 'processed' column",
+        "description": "data_collection/orchestrator.py queries normalized=1 but schema column is named 'processed'. Returns no records.",
+        "priority": "critical",
+        "touchedFiles": ["data_collection/orchestrator.py"],
+        "suggestedNext": false
+      },
+      {
+        "id": "fix-collection-frequency",
+        "title": "Fix collection source frequency_hours column",
+        "description": "data_collection/orchestrator.py queries frequency_hours but schema uses collection_frequency. Collection scheduling never triggers.",
+        "priority": "critical",
+        "touchedFiles": ["memory/database.py", "data_collection/orchestrator.py"],
+        "suggestedNext": false
+      },
+      {
+        "id": "fix-kg-upsert",
+        "title": "Fix knowledge graph upsert missing columns",
+        "description": "storage/knowledge_graph.py references mention_count and first_seen columns not present in kg_entities schema.",
+        "priority": "critical",
+        "touchedFiles": ["memory/database.py", "storage/knowledge_graph.py"],
+        "suggestedNext": false
+      },
+      {
+        "id": "fix-circuit-breaker-history",
+        "title": "Implement get_breaker_history() in circuit breaker",
+        "description": "api/human_gate.py calls get_breaker_history() on the dashboard route but the function is not defined in capital/circuit_breaker.py. Dashboard crashes.",
+        "priority": "critical",
+        "touchedFiles": ["capital/circuit_breaker.py"],
+        "suggestedNext": false
+      },
+      {
+        "id": "pheromone-decay-impl",
+        "title": "Implement pheromone decay calculation",
+        "description": "Scheduler calls apply_pheromone_decay() daily but the actual 50% weight decay logic after 7 days is not implemented anywhere.",
+        "priority": "high",
+        "touchedFiles": ["memory/hot_memory.py", "memory/database.py"],
+        "suggestedNext": false
+      },
+      {
+        "id": "72hr-explore-protocol",
+        "title": "Implement 72-hour explore protocol",
+        "description": "Spec defines a create→distribute→observe→decide→assess cycle with a 2% CTR threshold triggering paid spend. No implementation found.",
+        "priority": "high",
+        "touchedFiles": ["agents/master_agent.py", "capital/portfolio_manager.py"],
+        "suggestedNext": false
+      },
+      {
+        "id": "ab-test-stats",
+        "title": "Improve A/B test statistical evaluation",
+        "description": "Current winner determination is oversimplified — no sample size validation, no variance calculation, no significance threshold.",
+        "priority": "medium",
+        "touchedFiles": ["agents/ab_tester.py"],
+        "suggestedNext": false
+      },
+      {
+        "id": "voice-kb-seed",
+        "title": "Seed voice AI company knowledge base",
+        "description": "knowledge/company_kb.py schema exists but seed_demo_company() is not fully implemented. Voice calls have no client-specific data to draw from.",
+        "priority": "medium",
+        "touchedFiles": ["knowledge/company_kb.py"],
+        "suggestedNext": false
+      },
+      {
+        "id": "slack-two-way",
+        "title": "Wire Slack Web API client into swarm alerts",
+        "description": "integrations/slack_client.py built. Now route human-gate approvals and daily summaries through it. Add unread mention polling so Martin can reply-approve from Slack.",
+        "priority": "medium",
+        "touchedFiles": ["integrations/slack_client.py", "agents/master_agent.py", "api/human_gate.py"],
+        "suggestedNext": false
+      },
+      {
+        "id": "crm-router-adoption",
+        "title": "Migrate agents to use crm_router instead of ghl_client directly",
+        "description": "webhooks/ghl_handler.py, voice/call_functions.py, agents/qualification_agent.py all import ghl_client directly. Should route through crm_router for multi-CRM support.",
+        "priority": "medium",
+        "touchedFiles": ["webhooks/ghl_handler.py", "voice/call_functions.py", "agents/qualification_agent.py"],
+        "suggestedNext": false
+      },
+      {
+        "id": "unit-tests",
+        "title": "Add unit tests for critical paths",
+        "description": "No test directory exists. Minimum coverage needed: kelly_engine, circuit_breaker, confidence scoring, crm_router routing logic.",
+        "priority": "low",
+        "touchedFiles": ["tests/"],
+        "suggestedNext": false
+      }
+    ],
+    "queued": [],
+    "inprogress": [],
+    "review": [],
+    "done": [
+      {
+        "id": "ghl-client",
+        "title": "GoHighLevel CRM client",
+        "description": "Full GHL REST API wrapper — contacts, SMS, tasks, pipeline stage moves, tags.",
+        "completedAt": "2026-03-09T00:00:00Z",
+        "touchedFiles": ["integrations/ghl_client.py"]
+      },
+      {
+        "id": "hubspot-client",
+        "title": "HubSpot CRM client",
+        "description": "HubSpot v3 REST API — contact CRUD, search by email, tags, deal stages, tasks, notes.",
+        "completedAt": "2026-03-09T00:00:00Z",
+        "touchedFiles": ["integrations/hubspot_client.py"]
+      },
+      {
+        "id": "salesforce-client",
+        "title": "Salesforce CRM client",
+        "description": "Salesforce REST API with OAuth2 auto-refresh — Contact, Opportunity, Task, Note, SOQL.",
+        "completedAt": "2026-03-09T00:00:00Z",
+        "touchedFiles": ["integrations/salesforce_client.py"]
+      },
+      {
+        "id": "crm-router",
+        "title": "CRM abstraction router",
+        "description": "Single interface that auto-detects and routes to GHL, HubSpot, or Salesforce based on what's configured.",
+        "completedAt": "2026-03-09T00:00:00Z",
+        "touchedFiles": ["integrations/crm_router.py"]
+      },
+      {
+        "id": "slack-api-client",
+        "title": "Slack Web API client",
+        "description": "Full two-way Slack client — post/update/delete, threads, reactions, channel history, file uploads, mention polling.",
+        "completedAt": "2026-03-09T00:00:00Z",
+        "touchedFiles": ["integrations/slack_client.py"]
+      },
+      {
+        "id": "config-expansion",
+        "title": "Config expanded for HubSpot, Salesforce, Slack API",
+        "description": "Added SLACK_BOT_TOKEN, HUBSPOT_API_KEY, SALESFORCE_* credentials to config.py and requirements.txt.",
+        "completedAt": "2026-03-09T00:00:00Z",
+        "touchedFiles": ["config.py", "requirements.txt"]
+      }
+    ],
+    "blocked": []
+  },
+  "suggestedNext": "fix-ab-test-schema"
+}
