@@ -104,7 +104,7 @@ def _pct_change(current, prior) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 @reports_bp.route("/api/reports/monthly", methods=["GET"])
-@require_auth
+@require_auth()
 def monthly_report():
     """Return current-month performance vs prior month."""
     try:
@@ -144,7 +144,7 @@ def monthly_report():
 
 
 @reports_bp.route("/api/reports/summary", methods=["GET"])
-@require_auth
+@require_auth()
 def all_time_summary():
     """Return all-time headline numbers for the account."""
     try:

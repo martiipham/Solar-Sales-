@@ -23,7 +23,7 @@ Endpoints:
 import logging
 from datetime import datetime
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, g
 
 from memory.database import fetch_all, fetch_one, get_conn
 from api.auth import require_auth
@@ -45,10 +45,10 @@ def _client_id_for_user(user: dict) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 @kb_bp.route("/api/kb/profile", methods=["GET"])
-@require_auth
+@require_auth()
 def get_profile():
     """Fetch the company profile for the current client."""
-    user = request.current_user
+    user = g.user
     client_id = _client_id_for_user(user)
     try:
         row = fetch_one("SELECT * FROM company_profiles WHERE client_id = ?", (client_id,))
@@ -59,10 +59,10 @@ def get_profile():
 
 
 @kb_bp.route("/api/kb/profile", methods=["PUT"])
-@require_auth
+@require_auth()
 def update_profile():
     """Update the company profile."""
-    user = request.current_user
+    user = g.user
     client_id = _client_id_for_user(user)
     try:
         data = request.get_json(force=True) or {}
@@ -111,10 +111,10 @@ def update_profile():
 # ─────────────────────────────────────────────────────────────────────────────
 
 @kb_bp.route("/api/kb/products", methods=["GET"])
-@require_auth
+@require_auth()
 def list_products():
     """List all products for the current client."""
-    user = request.current_user
+    user = g.user
     client_id = _client_id_for_user(user)
     try:
         rows = fetch_all(
@@ -128,10 +128,10 @@ def list_products():
 
 
 @kb_bp.route("/api/kb/products", methods=["POST"])
-@require_auth
+@require_auth()
 def add_product():
     """Add a new product to the KB."""
-    user = request.current_user
+    user = g.user
     client_id = _client_id_for_user(user)
     try:
         data = request.get_json(force=True) or {}
@@ -157,10 +157,10 @@ def add_product():
 
 
 @kb_bp.route("/api/kb/products/<int:product_id>", methods=["PUT"])
-@require_auth
+@require_auth()
 def update_product(product_id: int):
     """Update a product by ID."""
-    user = request.current_user
+    user = g.user
     client_id = _client_id_for_user(user)
     try:
         data = request.get_json(force=True) or {}
@@ -184,10 +184,10 @@ def update_product(product_id: int):
 
 
 @kb_bp.route("/api/kb/products/<int:product_id>", methods=["DELETE"])
-@require_auth
+@require_auth()
 def delete_product(product_id: int):
     """Soft-delete a product (sets active=0)."""
-    user = request.current_user
+    user = g.user
     client_id = _client_id_for_user(user)
     try:
         with get_conn() as conn:
@@ -206,10 +206,10 @@ def delete_product(product_id: int):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @kb_bp.route("/api/kb/faqs", methods=["GET"])
-@require_auth
+@require_auth()
 def list_faqs():
     """List all FAQs for the current client."""
-    user = request.current_user
+    user = g.user
     client_id = _client_id_for_user(user)
     try:
         rows = fetch_all(
@@ -223,10 +223,10 @@ def list_faqs():
 
 
 @kb_bp.route("/api/kb/faqs", methods=["POST"])
-@require_auth
+@require_auth()
 def add_faq():
     """Add a new FAQ entry."""
-    user = request.current_user
+    user = g.user
     client_id = _client_id_for_user(user)
     try:
         data = request.get_json(force=True) or {}
@@ -254,10 +254,10 @@ def add_faq():
 
 
 @kb_bp.route("/api/kb/faqs/<int:faq_id>", methods=["PUT"])
-@require_auth
+@require_auth()
 def update_faq(faq_id: int):
     """Update a FAQ by ID."""
-    user = request.current_user
+    user = g.user
     client_id = _client_id_for_user(user)
     try:
         data = request.get_json(force=True) or {}
@@ -288,10 +288,10 @@ def update_faq(faq_id: int):
 
 
 @kb_bp.route("/api/kb/faqs/<int:faq_id>", methods=["DELETE"])
-@require_auth
+@require_auth()
 def delete_faq(faq_id: int):
     """Delete a FAQ by ID."""
-    user = request.current_user
+    user = g.user
     client_id = _client_id_for_user(user)
     try:
         with get_conn() as conn:
@@ -310,10 +310,10 @@ def delete_faq(faq_id: int):
 # ─────────────────────────────────────────────────────────────────────────────
 
 @kb_bp.route("/api/kb/objections", methods=["GET"])
-@require_auth
+@require_auth()
 def list_objections():
     """List all objection handlers for the current client."""
-    user = request.current_user
+    user = g.user
     client_id = _client_id_for_user(user)
     try:
         rows = fetch_all(
@@ -327,10 +327,10 @@ def list_objections():
 
 
 @kb_bp.route("/api/kb/objections", methods=["POST"])
-@require_auth
+@require_auth()
 def add_objection():
     """Add a new objection handler."""
-    user = request.current_user
+    user = g.user
     client_id = _client_id_for_user(user)
     try:
         data = request.get_json(force=True) or {}
@@ -357,10 +357,10 @@ def add_objection():
 
 
 @kb_bp.route("/api/kb/objections/<int:obj_id>", methods=["PUT"])
-@require_auth
+@require_auth()
 def update_objection(obj_id: int):
     """Update an objection handler by ID."""
-    user = request.current_user
+    user = g.user
     client_id = _client_id_for_user(user)
     try:
         data = request.get_json(force=True) or {}
@@ -389,10 +389,10 @@ def update_objection(obj_id: int):
 
 
 @kb_bp.route("/api/kb/objections/<int:obj_id>", methods=["DELETE"])
-@require_auth
+@require_auth()
 def delete_objection(obj_id: int):
     """Delete an objection handler by ID."""
-    user = request.current_user
+    user = g.user
     client_id = _client_id_for_user(user)
     try:
         with get_conn() as conn:

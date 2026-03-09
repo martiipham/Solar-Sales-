@@ -20,10 +20,10 @@ Endpoints:
 import logging
 from datetime import datetime
 
-from flask import Blueprint, jsonify, request
+from flask import Blueprint, jsonify, request, g
 
 from memory.database import fetch_one, get_conn
-from api.auth import require_auth, require_role
+from api.auth import require_auth
 
 logger = logging.getLogger(__name__)
 
@@ -85,10 +85,10 @@ def _build_status(client_id: str) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 @onboarding_bp.route("/api/onboarding/status", methods=["GET"])
-@require_auth
+@require_auth()
 def onboarding_status():
     """Return which onboarding steps are complete."""
-    user = request.current_user
+    user = g.user
     client_id = user.get("client_id") or "global"
     try:
         return jsonify(_build_status(client_id)), 200
@@ -98,10 +98,10 @@ def onboarding_status():
 
 
 @onboarding_bp.route("/api/onboarding/company", methods=["POST"])
-@require_auth
+@require_auth()
 def onboarding_company():
     """Save company info and mark step 1 complete."""
-    user = request.current_user
+    user = g.user
     client_id = user.get("client_id") or "global"
     try:
         data = request.get_json(force=True) or {}
@@ -144,10 +144,10 @@ def onboarding_company():
 
 
 @onboarding_bp.route("/api/onboarding/crm", methods=["POST"])
-@require_auth
+@require_auth()
 def onboarding_crm():
     """Save GHL API key and location ID, mark step 2 complete."""
-    user = request.current_user
+    user = g.user
     client_id = user.get("client_id") or "global"
     try:
         data = request.get_json(force=True) or {}
@@ -192,10 +192,10 @@ def onboarding_crm():
 
 
 @onboarding_bp.route("/api/onboarding/voice", methods=["POST"])
-@require_auth
+@require_auth()
 def onboarding_voice():
     """Save Retell agent ID and phone number, mark step 3 complete."""
-    user = request.current_user
+    user = g.user
     client_id = user.get("client_id") or "global"
     try:
         data = request.get_json(force=True) or {}
@@ -220,10 +220,10 @@ def onboarding_voice():
 
 
 @onboarding_bp.route("/api/onboarding/knowledge", methods=["POST"])
-@require_auth
+@require_auth()
 def onboarding_knowledge():
     """Mark the knowledge base step as complete."""
-    user = request.current_user
+    user = g.user
     client_id = user.get("client_id") or "global"
     try:
         _set_setting("step_knowledge", "done", client_id)
@@ -234,10 +234,10 @@ def onboarding_knowledge():
 
 
 @onboarding_bp.route("/api/onboarding/complete", methods=["POST"])
-@require_auth
+@require_auth()
 def onboarding_complete():
     """Mark onboarding fully complete."""
-    user = request.current_user
+    user = g.user
     client_id = user.get("client_id") or "global"
     try:
         _set_setting("step_complete", "done", client_id)

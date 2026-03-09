@@ -423,6 +423,42 @@ def init_db():
                 category TEXT DEFAULT 'general',
                 description TEXT
             );
+
+            -- Knowledge base: products/services offered by client
+            CREATE TABLE IF NOT EXISTS company_products (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT DEFAULT (datetime('now')),
+                client_id TEXT NOT NULL,
+                product_type TEXT,
+                name TEXT NOT NULL,
+                description TEXT,
+                price_from_aud REAL,
+                price_to_aud REAL,
+                features TEXT,
+                brands TEXT,
+                active INTEGER DEFAULT 1
+            );
+
+            -- Knowledge base: FAQs for the AI voice agent
+            CREATE TABLE IF NOT EXISTS company_faqs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT DEFAULT (datetime('now')),
+                client_id TEXT NOT NULL,
+                question TEXT NOT NULL,
+                answer TEXT NOT NULL,
+                category TEXT DEFAULT 'general',
+                priority INTEGER DEFAULT 5
+            );
+
+            -- Knowledge base: objection handling scripts
+            CREATE TABLE IF NOT EXISTS company_objections (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                created_at TEXT DEFAULT (datetime('now')),
+                client_id TEXT NOT NULL,
+                objection TEXT NOT NULL,
+                response TEXT NOT NULL,
+                priority INTEGER DEFAULT 5
+            );
         """)
     _apply_migrations()
     print("[DB] Database ready.")
@@ -472,6 +508,20 @@ def _apply_migrations():
         # experiments — paid spend flag for explore protocol
         ("experiments", "paid_spend_activated INTEGER DEFAULT 0"),
         ("experiments", "explore_phase TEXT"),
+        # company_profiles — extended fields used by KB API, voice, and onboarding
+        ("company_profiles", "company_name TEXT"),
+        ("company_profiles", "phone TEXT"),
+        ("company_profiles", "email TEXT"),
+        ("company_profiles", "service_areas TEXT"),
+        ("company_profiles", "years_in_business INTEGER DEFAULT 0"),
+        ("company_profiles", "num_installers INTEGER DEFAULT 0"),
+        ("company_profiles", "certifications TEXT"),
+        ("company_profiles", "retell_agent_id TEXT"),
+        ("company_profiles", "elevenlabs_voice_id TEXT"),
+        ("company_profiles", "ghl_location_id TEXT"),
+        ("company_profiles", "active INTEGER DEFAULT 1"),
+        # call_logs — full transcript text (transcript_turns stores count only)
+        ("call_logs", "transcript_text TEXT"),
     ]
     with get_conn() as conn:
         for table, col_def in migrations:

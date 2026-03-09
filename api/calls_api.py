@@ -32,7 +32,7 @@ def _fmt_duration(seconds) -> str:
 
 
 def _parse_transcript(raw) -> list:
-    """Parse transcript_turns field — stored as JSON string or list."""
+    """Parse transcript_text field — stored as JSON string or list."""
     if not raw:
         return []
     if isinstance(raw, list):
@@ -46,9 +46,9 @@ def _parse_transcript(raw) -> list:
 def _row_to_call(row) -> dict:
     """Convert a DB row to a clean call dict for the API."""
     d = dict(row)
-    d["duration_fmt"] = _fmt_duration(d.get("duration"))
-    d["transcript"] = _parse_transcript(d.get("transcript_turns"))
-    d.pop("transcript_turns", None)
+    d["duration_fmt"] = _fmt_duration(d.get("duration_seconds"))
+    d["transcript"] = _parse_transcript(d.get("transcript_text"))
+    d.pop("transcript_text", None)
     return d
 
 
@@ -57,7 +57,7 @@ def _row_to_call(row) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 @calls_bp.route("/api/calls", methods=["GET"])
-@require_auth
+@require_auth()
 def list_calls():
     """Return paginated call log, optionally filtered by date range or status."""
     try:
@@ -80,8 +80,8 @@ def list_calls():
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         query = f"""
             SELECT call_id, client_id, from_phone, to_phone, agent_id,
-                   status, duration, recording_url, lead_score, started_at,
-                   transcript_turns
+                   status, duration_seconds, recording_url, lead_score, started_at,
+                   transcript_text
             FROM call_logs
             {where}
             ORDER BY started_at DESC
@@ -104,7 +104,7 @@ def list_calls():
 
 
 @calls_bp.route("/api/calls/stats", methods=["GET"])
-@require_auth
+@require_auth()
 def call_stats():
     """Return aggregated call performance stats for the dashboard."""
     try:
@@ -117,7 +117,7 @@ def call_stats():
             row = fetch_one(
                 "SELECT COUNT(*) as total, "
                 "SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) as completed, "
-                "AVG(duration) as avg_duration, "
+                "AVG(duration_seconds) as avg_duration, "
                 "AVG(lead_score) as avg_score "
                 "FROM call_logs WHERE started_at >= ?",
                 (since_iso,)
@@ -165,7 +165,7 @@ def call_stats():
 
 
 @calls_bp.route("/api/calls/<call_id>", methods=["GET"])
-@require_auth
+@require_auth()
 def get_call(call_id: str):
     """Return full call detail including parsed transcript."""
     try:
