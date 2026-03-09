@@ -676,7 +676,7 @@ def panel_pheromones(d: dict) -> Panel:
     if not signals:
         t.add_row("", "[dim]No pheromone signals yet[/]", "", "", "", "")
 
-    footer = Text(f"  7d: +{ps.get('positive',0)} positive  -{ps.get('negative',0)} negative  avg: {ps.get('avg_strength',0):.2f}", style="dim")
+    footer = Text(f"  7d: +{ps.get('positive',0)} positive  -{ps.get('negative',0)} negative  avg: {ps.get('avg_strength') or 0:.2f}", style="dim")
     from rich.console import Group
     return Panel(Group(t, footer), title="[bold]PHEROMONE SIGNALS[/]", border_style="magenta", box=box.ROUNDED)
 

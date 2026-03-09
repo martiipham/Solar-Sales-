@@ -20,6 +20,7 @@ Usage:
   python cli.py kg-summary         — show knowledge graph entity counts
   python cli.py ab-tests           — show A/B test results summary
   python cli.py mutate             — run mutation engine now
+  python cli.py configure          — interactive API key setup wizard
 """
 
 import sys
@@ -603,6 +604,8 @@ def main():
         cmd_ab_tests()
     elif cmd == "mutate":
         cmd_mutate()
+    elif cmd == "configure":
+        cmd_configure()
     else:
         print(f"\n  Unknown command: '{cmd}'")
         print(__doc__)
