@@ -1,6 +1,7 @@
 openai>=1.30.0
 flask>=3.0.0
 flask-cors>=4.0.0
+flask-limiter>=3.5.0
 apscheduler>=3.10.0
 python-dotenv>=1.0.0
 requests>=2.31.0
@@ -8,3 +9,5 @@ pytz>=2024.1
 rich>=13.7.0
 simple-salesforce>=1.12.5
 slack-sdk>=3.27.0
+PyJWT>=2.8.0
+bcrypt>=4.1.0

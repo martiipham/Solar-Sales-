@@ -30,6 +30,8 @@ import json
 import logging
 from datetime import datetime
 from flask import Flask, request, jsonify
+from flask_limiter import Limiter
+from flask_limiter.util import get_remote_address
 
 import config
 from voice.call_functions import FUNCTION_DEFINITIONS, execute_function
@@ -39,6 +41,15 @@ from voice.prompt_templates import build_prompt
 logger = logging.getLogger(__name__)
 
 voice_app = Flask(__name__)
+
+# Rate limiting — prevent runaway OpenAI spend from request floods.
+# Retell sends ~1 request per conversation turn; 120/min is generous headroom.
+_limiter = Limiter(
+    app=voice_app,
+    key_func=get_remote_address,
+    default_limits=[],       # No blanket limit — applied per route below
+    storage_uri="memory://",
+)
 
 # In-memory call context store (replace with Redis for multi-server)
 _call_contexts: dict = {}
@@ -144,6 +155,7 @@ def call_started():
 
 
 @voice_app.route("/voice/response", methods=["POST"])
+@_limiter.limit("120 per minute; 1000 per hour")
 def retell_response():
     """Main Retell Custom LLM endpoint — generate next agent response.
 
@@ -332,7 +344,7 @@ def _call_llm(messages: list, allow_tools: bool = True) -> tuple[str, list]:
 
     try:
         from openai import OpenAI
-        client   = OpenAI(api_key=config.OPENAI_API_KEY)
+        client   = OpenAI(api_key=config.OPENAI_API_KEY, timeout=30.0)
         kwargs   = {
             "model":       config.OPENAI_MODEL,
             "messages":    messages,

@@ -296,7 +296,9 @@ def find_contact_by_phone(phone: str) -> dict | None:
             return None
         if crm == "salesforce":
             sf = _get_salesforce()
-            records = sf._soql(f"SELECT Id, FirstName, LastName, Email, Phone, MailingCity, MailingState FROM Contact WHERE Phone = '{phone}' LIMIT 1")
+            # Escape single quotes to prevent SOQL injection (SOQL escape = '' for ')
+            safe_phone = str(phone).replace("'", "\\'")
+            records = sf._soql(f"SELECT Id, FirstName, LastName, Email, Phone, MailingCity, MailingState FROM Contact WHERE Phone = '{safe_phone}' LIMIT 1")
             return records[0] if records else None
     except Exception as e:
         logger.error(f"[CRM_ROUTER] find_contact_by_phone failed: {e}")

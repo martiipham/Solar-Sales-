@@ -7,7 +7,12 @@ Flask API on port 5000.
   POST /slack/actions            — Slack interactive button handler
   GET  /pending                  — list all awaiting review
   GET  /dashboard                — full swarm status overview
-  GET  /health                   — system health check
+  GET  /health                   — system health check (public)
+
+Authentication:
+  All endpoints except /health require:
+    Authorization: Bearer <GATE_API_KEY>
+  Set GATE_API_KEY in .env. If not set, auth is bypassed with a warning logged.
 """
 
 import hashlib
@@ -16,6 +21,7 @@ import json
 import logging
 import time
 from datetime import datetime
+from functools import wraps
 from flask import Flask, request, jsonify
 from memory.database import update, fetch_all, fetch_one
 from memory.hot_memory import get_swarm_summary, get_pending_experiments
@@ -30,9 +36,70 @@ logger = logging.getLogger(__name__)
 gate_app = Flask(__name__)
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# AUTH HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _require_api_key(f):
+    """Decorator: require Bearer token matching GATE_API_KEY.
+
+    If GATE_API_KEY is not configured, logs a warning but allows through
+    (so local dev without a key still works). In production always set the key.
+    """
+    @wraps(f)
+    def decorated(*args, **kwargs):
+        if not config.GATE_API_KEY:
+            logger.warning("[HUMAN GATE] GATE_API_KEY not set — endpoint is unprotected")
+            return f(*args, **kwargs)
+        auth = request.headers.get("Authorization", "")
+        if not auth.startswith("Bearer ") or auth[7:] != config.GATE_API_KEY:
+            logger.warning(f"[HUMAN GATE] Unauthorised request to {request.path} from {request.remote_addr}")
+            return jsonify({"error": "Unauthorised"}), 401
+        return f(*args, **kwargs)
+    return decorated
+
+
+def _verify_slack_signature(req) -> bool:
+    """Verify Slack request signature using signing secret.
+
+    Args:
+        req: Flask request object
+
+    Returns:
+        True only if signature is cryptographically valid.
+        Always False (hard block) when SLACK_SIGNING_SECRET is not configured.
+    """
+    if not config.SLACK_SIGNING_SECRET:
+        logger.warning("[HUMAN GATE] SLACK_SIGNING_SECRET not set — rejecting Slack action")
+        return False
+
+    slack_signature = req.headers.get("X-Slack-Signature", "")
+    timestamp = req.headers.get("X-Slack-Request-Timestamp", "")
+
+    # Reject requests older than 5 minutes (replay attack protection)
+    try:
+        if abs(time.time() - float(timestamp)) > 300:
+            return False
+    except (ValueError, TypeError):
+        return False
+
+    sig_basestring = f"v0:{timestamp}:{req.get_data(as_text=True)}"
+    expected = "v0=" + hmac.new(
+        config.SLACK_SIGNING_SECRET.encode(),
+        sig_basestring.encode(),
+        hashlib.sha256,
+    ).hexdigest()
+
+    return hmac.compare_digest(expected, slack_signature)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ENDPOINTS
+# ─────────────────────────────────────────────────────────────────────────────
+
 @gate_app.route("/health", methods=["GET"])
 def health():
-    """System health check."""
+    """System health check (public — no auth required)."""
     return jsonify({
         "status": "ok",
         "service": "human-gate",
@@ -43,6 +110,7 @@ def health():
 
 
 @gate_app.route("/approve/<int:experiment_id>", methods=["POST"])
+@_require_api_key
 def approve(experiment_id: int):
     """Approve an experiment and allocate budget.
 
@@ -51,21 +119,21 @@ def approve(experiment_id: int):
 
     Request body (optional JSON):
         approved_by: Name of approver (default: 'human')
-        budget_override: Custom budget in AUD (optional)
     """
     try:
         data = request.get_json(force=True) or {}
-        approved_by = data.get("approved_by", "human")
+        approved_by = str(data.get("approved_by", "human"))[:64]  # length-cap input
         result = _approve(experiment_id, approved_by=approved_by)
         if "error" in result:
             return jsonify(result), 404 if "not found" in result["error"] else 400
         return jsonify(result), 200
     except Exception as e:
         logger.error(f"[HUMAN GATE] Approve error: {e}")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @gate_app.route("/reject/<int:experiment_id>", methods=["POST"])
+@_require_api_key
 def reject(experiment_id: int):
     """Reject an experiment with a reason.
 
@@ -78,18 +146,19 @@ def reject(experiment_id: int):
     """
     try:
         data = request.get_json(force=True) or {}
-        reason = data.get("reason", "Rejected by human reviewer")
-        rejected_by = data.get("rejected_by", "human")
+        reason = str(data.get("reason", "Rejected by human reviewer"))[:500]
+        rejected_by = str(data.get("rejected_by", "human"))[:64]
         result = _reject(experiment_id, rejected_by=rejected_by, reason=reason)
         if "error" in result:
             return jsonify(result), 404 if "not found" in result["error"] else 400
         return jsonify(result), 200
     except Exception as e:
         logger.error(f"[HUMAN GATE] Reject error: {e}")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @gate_app.route("/pending", methods=["GET"])
+@_require_api_key
 def pending():
     """List all experiments awaiting human review."""
     try:
@@ -100,10 +169,11 @@ def pending():
         }), 200
     except Exception as e:
         logger.error(f"[HUMAN GATE] Pending error: {e}")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @gate_app.route("/dashboard", methods=["GET"])
+@_require_api_key
 def dashboard():
     """Full swarm status overview."""
     try:
@@ -126,10 +196,11 @@ def dashboard():
 
     except Exception as e:
         logger.error(f"[HUMAN GATE] Dashboard error: {e}")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @gate_app.route("/costs", methods=["GET"])
+@_require_api_key
 def costs():
     """API usage and cost dashboard.
 
@@ -143,7 +214,7 @@ def costs():
             get_cost_summary, get_daily_costs, get_call_cost,
             get_client_costs, get_projected_monthly_cost,
         )
-        days      = int(request.args.get("days", 7))
+        days      = min(int(request.args.get("days", 7)), 365)
         call_id   = request.args.get("call_id")
         client_id = request.args.get("client_id")
 
@@ -161,15 +232,16 @@ def costs():
 
     except Exception as e:
         logger.error(f"[HUMAN GATE] Costs error: {e}")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @gate_app.route("/experiments", methods=["GET"])
+@_require_api_key
 def list_experiments():
     """List recent experiments with optional status filter."""
     try:
         status = request.args.get("status")
-        limit = int(request.args.get("limit", 20))
+        limit  = min(int(request.args.get("limit", 20)), 100)  # cap at 100
         if status:
             rows = fetch_all(
                 "SELECT * FROM experiments WHERE status = ? ORDER BY created_at DESC LIMIT ?",
@@ -179,10 +251,12 @@ def list_experiments():
             rows = fetch_all("SELECT * FROM experiments ORDER BY created_at DESC LIMIT ?", (limit,))
         return jsonify({"experiments": rows, "count": len(rows)}), 200
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
+        logger.error(f"[HUMAN GATE] List experiments error: {e}")
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @gate_app.route("/approve-breaker", methods=["POST"])
+@_require_api_key
 def approve_breaker_reset():
     """Approve a circuit breaker reset (Red level requires this endpoint).
 
@@ -191,43 +265,15 @@ def approve_breaker_reset():
     """
     try:
         data = request.get_json(force=True) or {}
-        approved_by = data.get("approved_by", "human")
+        approved_by = str(data.get("approved_by", "human"))[:64]
 
         from capital.circuit_breaker import reset_breaker
         result = reset_breaker(approved_by)
         return jsonify(result), 200 if result["success"] else 400
 
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
-
-
-def _verify_slack_signature(req) -> bool:
-    """Verify Slack request signature using signing secret.
-
-    Args:
-        req: Flask request object
-
-    Returns:
-        True if signature is valid or no signing secret configured
-    """
-    if not config.SLACK_SIGNING_SECRET:
-        return True  # Skip verification if not configured
-
-    slack_signature = req.headers.get("X-Slack-Signature", "")
-    timestamp = req.headers.get("X-Slack-Request-Timestamp", "")
-
-    # Reject requests older than 5 minutes to prevent replay attacks
-    if abs(time.time() - float(timestamp or 0)) > 300:
-        return False
-
-    sig_basestring = f"v0:{timestamp}:{req.get_data(as_text=True)}"
-    expected = "v0=" + hmac.new(
-        config.SLACK_SIGNING_SECRET.encode(),
-        sig_basestring.encode(),
-        hashlib.sha256,
-    ).hexdigest()
-
-    return hmac.compare_digest(expected, slack_signature)
+        logger.error(f"[HUMAN GATE] Breaker reset error: {e}")
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @gate_app.route("/slack/actions", methods=["POST"])
@@ -262,10 +308,10 @@ def slack_actions():
             result = _reject(experiment_id, rejected_by="slack", reason="Rejected via Slack button")
             status_text = f"❌ Experiment #{experiment_id} *rejected* via Slack."
         else:
-            return jsonify({"error": f"Unknown action: {action_id}"}), 400
+            return jsonify({"error": "Unknown action"}), 400
 
         # Replace the original message buttons with confirmation text
-        if response_url:
+        if response_url and response_url.startswith("https://hooks.slack.com/"):
             import requests as req_lib
             req_lib.post(response_url, json={
                 "replace_original": True,
@@ -276,8 +322,12 @@ def slack_actions():
 
     except Exception as e:
         logger.error(f"[HUMAN GATE] Slack actions error: {e}")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"error": "Internal server error"}), 500
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SHARED HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _approve(experiment_id: int, approved_by: str = "human") -> dict:
     """Internal approve logic shared by REST endpoint and Slack handler.

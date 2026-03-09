@@ -66,15 +66,57 @@ def alert_new_lead(name: str, score: float, reason: str, action: str) -> bool:
     return _post(payload)
 
 
+def _mask_phone(phone: str) -> str:
+    """Partially redact a phone number, showing last 3 digits only.
+
+    Args:
+        phone: Raw phone string
+
+    Returns:
+        Masked string e.g. '****345'
+    """
+    s = str(phone).strip()
+    return ("*" * max(0, len(s) - 3)) + s[-3:] if len(s) > 3 else "***"
+
+
+def _mask_email(email: str) -> str:
+    """Partially redact an email address, showing domain only.
+
+    Args:
+        email: Raw email string
+
+    Returns:
+        Masked string e.g. '****@gmail.com'
+    """
+    if "@" in email:
+        local, domain = email.split("@", 1)
+        return f"{'*' * min(len(local), 4)}@{domain}"
+    return "****"
+
+
 def alert_high_value_lead(name: str, score: float, details: dict) -> bool:
-    """Send a high-value lead (7+) alert with full details.
+    """Send a high-value lead (7+) alert with masked PII.
+
+    Phone and email are partially redacted before posting to Slack
+    to limit PII exposure in shared channels.
 
     Args:
         name: Lead's name
         score: Score (expected >= 7)
         details: Dict with email, phone, suburb, monthly_bill etc.
     """
-    lines = [f"*{k.replace('_',' ').title()}:* {v}" for k, v in details.items() if v]
+    safe = {}
+    for k, v in details.items():
+        if not v:
+            continue
+        if k == "phone":
+            safe[k] = _mask_phone(str(v))
+        elif k == "email":
+            safe[k] = _mask_email(str(v))
+        else:
+            safe[k] = v
+
+    lines = [f"*{k.replace('_',' ').title()}:* {v}" for k, v in safe.items()]
     payload = {
         "blocks": [
             _block(f"*🚨 HIGH VALUE LEAD — {name}* ({score}/10)"),

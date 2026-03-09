@@ -8,6 +8,8 @@ Flask server on port 5001. Handles:
   GET  /health                 — returns 200 OK
 """
 
+import hashlib
+import hmac
 import json
 import logging
 from datetime import datetime
@@ -19,6 +21,48 @@ import config
 logger = logging.getLogger(__name__)
 
 ghl_app = Flask(__name__)
+
+
+def _verify_ghl_signature(req) -> bool:
+    """Verify GHL webhook signature using HMAC-SHA256.
+
+    GHL signs requests with X-GHL-Signature header.
+    If GHL_WEBHOOK_SECRET is not configured, logs a warning and allows through
+    so existing setups without a secret keep working.
+
+    Args:
+        req: Flask request object
+
+    Returns:
+        True if valid or no secret configured
+    """
+    if not config.GHL_WEBHOOK_SECRET:
+        logger.warning("[GHL WEBHOOK] GHL_WEBHOOK_SECRET not set — skipping signature check")
+        return True
+
+    sig = req.headers.get("X-GHL-Signature", "")
+    if not sig:
+        return False
+
+    expected = hmac.new(
+        config.GHL_WEBHOOK_SECRET.encode(),
+        req.get_data(),
+        hashlib.sha256,
+    ).hexdigest()
+
+    return hmac.compare_digest(expected, sig)
+
+
+def _safe_like(value: str) -> str:
+    """Escape LIKE special characters in a string to prevent SQL wildcard injection.
+
+    Args:
+        value: Raw string to use inside a LIKE pattern
+
+    Returns:
+        Escaped string safe for use in: WHERE col LIKE '%' || ? || '%' ESCAPE '\\'
+    """
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
 @ghl_app.route("/health", methods=["GET"])
@@ -34,6 +78,9 @@ def new_lead():
     Expects JSON body with contact data from GHL webhook.
     Saves lead to database and triggers qualification.
     """
+    if not _verify_ghl_signature(request):
+        logger.warning("[GHL WEBHOOK] new-lead: invalid signature")
+        return jsonify({"error": "Invalid signature"}), 403
     try:
         data = request.get_json(force=True) or {}
         print(f"[GHL WEBHOOK] New lead received: {data.get('full_name', data.get('name', 'Unknown'))}")
@@ -69,6 +116,9 @@ def call_complete():
 
     Updates lead status and pipeline stage based on call outcome.
     """
+    if not _verify_ghl_signature(request):
+        logger.warning("[GHL WEBHOOK] call-complete: invalid signature")
+        return jsonify({"error": "Invalid signature"}), 403
     try:
         data = request.get_json(force=True) or {}
         contact_id = data.get("contactId") or data.get("contact_id")
@@ -100,6 +150,9 @@ def form_submit():
 
     Processes richer lead data including roof, bill, and homeowner info.
     """
+    if not _verify_ghl_signature(request):
+        logger.warning("[GHL WEBHOOK] form-submit: invalid signature")
+        return jsonify({"error": "Invalid signature"}), 403
     try:
         data = request.get_json(force=True) or {}
         print(f"[GHL WEBHOOK] Form submitted: {data.get('name', 'Unknown')}")
@@ -134,25 +187,30 @@ def stage_change():
 
     Updates the lead record to reflect the new pipeline position.
     """
+    if not _verify_ghl_signature(request):
+        logger.warning("[GHL WEBHOOK] stage-change: invalid signature")
+        return jsonify({"error": "Invalid signature"}), 403
     try:
         data = request.get_json(force=True) or {}
         contact_id = data.get("contactId") or data.get("contact_id")
         new_stage = data.get("newStage") or data.get("stage")
         print(f"[GHL WEBHOOK] Stage change: contact={contact_id} → {new_stage}")
 
+        # Escape LIKE wildcards to prevent SQL injection via contact_id
+        safe_id = _safe_like(str(contact_id or ""))
         from memory.database import get_conn
         with get_conn() as conn:
             conn.execute(
-                "UPDATE leads SET pipeline_stage = ? WHERE notes LIKE ?",
-                (new_stage, f"%{contact_id}%"),
+                r"UPDATE leads SET pipeline_stage = ? WHERE notes LIKE ? ESCAPE '\'",
+                (new_stage, f"%{safe_id}%"),
             )
 
         if new_stage and "convert" in new_stage.lower():
             from memory.database import get_conn as gc
             with gc() as conn:
                 conn.execute(
-                    "UPDATE leads SET status = 'converted', converted_at = ? WHERE notes LIKE ?",
-                    (datetime.utcnow().isoformat(), f"%{contact_id}%"),
+                    r"UPDATE leads SET status = 'converted', converted_at = ? WHERE notes LIKE ? ESCAPE '\'",
+                    (datetime.utcnow().isoformat(), f"%{safe_id}%"),
                 )
 
         return jsonify({"status": "processed", "contact_id": contact_id, "new_stage": new_stage}), 200

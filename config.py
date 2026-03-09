@@ -38,6 +38,14 @@ SLACK_BOT_TOKEN = get("SLACK_BOT_TOKEN", "")          # xoxb-... for Web API
 SLACK_DEFAULT_CHANNEL = get("SLACK_DEFAULT_CHANNEL", "#swarm-alerts")
 SLACK_SIGNING_SECRET = get("SLACK_SIGNING_SECRET", "")  # For verifying interactive payloads
 
+# Human Gate — protect approve/reject/dashboard endpoints with a shared secret
+# Set GATE_API_KEY in .env to enable. Requests must send: Authorization: Bearer <key>
+GATE_API_KEY = get("GATE_API_KEY", "")
+
+# GHL webhook secret — validate inbound webhook payloads from GoHighLevel
+# Set in GHL → Settings → Webhooks → Signing Secret
+GHL_WEBHOOK_SECRET = get("GHL_WEBHOOK_SECRET", "")
+
 # HubSpot
 HUBSPOT_API_KEY = get("HUBSPOT_API_KEY", "")           # Private app token
 
