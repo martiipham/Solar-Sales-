@@ -8,6 +8,7 @@
  */
 import React, { useState, useEffect, useRef, useCallback } from "react";
 import { useAuth } from "../AuthContext";
+import { useToast } from "../components/Toast";
 
 // ─── Design tokens ─────────────────────────────────────────────────────────
 const T = {
@@ -422,7 +423,6 @@ const NAV = [
     { id:"overview",   label:"Overview",   icon:"◈" },
     { id:"leads",      label:"Leads",      icon:"◎", badge:"hotLeads" },
     { id:"calls",      label:"Calls",      icon:"◷" },
-    { id:"emails",     label:"Emails",     icon:"◻" },
   ]},
   { section:"SYSTEM", items:[
     { id:"agents",     label:"Agents",     icon:"◬" },
@@ -430,6 +430,8 @@ const NAV = [
   ]},
   { section:"CONFIG", items:[
     { id:"settings",   label:"Settings",   icon:"◯" },
+    { id:"billing",    label:"Billing",    icon:"◈" },
+    { id:"support",    label:"Support",    icon:"◻" },
   ]},
 ];
 
@@ -552,6 +554,7 @@ function OverviewPage({ apiFetch, onNavigate }) {
 
 // ─── Leads ──────────────────────────────────────────────────────────────────
 function LeadsPage({ apiFetch }) {
+  const { toast } = useToast();
   const [leads, setLeads]   = useState([]);
   const [loading, setLoading] = useState(true);
   const [filter, setFilter] = useState("all");
@@ -562,8 +565,8 @@ function LeadsPage({ apiFetch }) {
     apiFetch("/api/swarm/leads?limit=100")
       .then(r=>r.json())
       .then(d => { const l = d?.leads||(Array.isArray(d)?d:[]); setLeads(l.length?l:MOCK.leads); setLoading(false); })
-      .catch(() => { setLeads(MOCK.leads); setLoading(false); });
-  }, [apiFetch]);
+      .catch(() => { toast.warn("Could not load leads — showing sample data"); setLeads(MOCK.leads); setLoading(false); });
+  }, [apiFetch]); // eslint-disable-line
 
   const norm = act => {
     const s = (act||"").toLowerCase();
@@ -799,6 +802,7 @@ function EmailsPage() {
 
 // ─── Agents ─────────────────────────────────────────────────────────────────
 function AgentsPage({ apiFetch }) {
+  const { toast } = useToast();
   const [agents, setAgents] = useState([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving]   = useState(false);
@@ -820,15 +824,15 @@ function AgentsPage({ apiFetch }) {
         const parsed = Array.isArray(list) ? list : Object.entries(list).map(([k,v])=>({ id:k, name:k, enabled:v?.enabled??v??false, description:v?.description||"" }));
         setAgents(parsed.length ? parsed : MOCK.agents); setLoading(false);
       })
-      .catch(() => { setAgents(MOCK.agents); setLoading(false); });
-  }, [apiFetch]);
+      .catch(() => { toast.warn("Could not load agents — showing sample data"); setAgents(MOCK.agents); setLoading(false); });
+  }, [apiFetch]); // eslint-disable-line
 
   const toggle = async (id, val) => {
     if (!apiFetch) { setAgents(prev=>prev.map(a=>a.id===id?{...a,enabled:val}:a)); return; }
     setSaving(true);
     setAgents(prev=>prev.map(a=>a.id===id?{...a,enabled:val}:a));
     try { await apiFetch("/api/agents/config",{ method:"PATCH", body:JSON.stringify({id,enabled:val}) }); }
-    catch { setAgents(prev=>prev.map(a=>a.id===id?{...a,enabled:!val}:a)); }
+    catch { setAgents(prev=>prev.map(a=>a.id===id?{...a,enabled:!val}:a)); toast.error("Failed to update agent"); }
     setSaving(false);
   };
 
@@ -994,13 +998,24 @@ function ReportingPage({ apiFetch }) {
 }
 
 // ─── Settings ───────────────────────────────────────────────────────────────
-function SettingsPage({ user }) {
-  const [tab, setTab]     = useState("company");
-  const [cfg, setCfg]     = useState(MOCK.retell);
-  const [saved, setSaved] = useState(false);
+function SettingsPage({ user, apiFetch }) {
+  const { toast } = useToast();
+  const [tab, setTab] = useState("company");
+  const [cfg, setCfg] = useState(MOCK.retell);
+  const [saving, setSaving] = useState(false);
 
   const set = (sec, key, val) => setCfg(p => ({ ...p, [sec]:{ ...p[sec], [key]:val } }));
-  const save = () => { setSaved(true); setTimeout(() => setSaved(false), 2500); };
+  const save = async () => {
+    setSaving(true);
+    try {
+      if (apiFetch) await apiFetch("/api/agents/config", { method:"PATCH", body:JSON.stringify(cfg) });
+      toast.success("Settings saved");
+    } catch {
+      toast.error("Save failed — please try again");
+    } finally {
+      setSaving(false);
+    }
+  };
 
   const TABS = [
     { id:"company",        label:"Company",          icon:"◈", desc:"Business details" },
@@ -1229,13 +1244,127 @@ function SettingsPage({ user }) {
         </>}
 
         {/* Save bar */}
-        <div style={{ marginTop:28, display:"flex", alignItems:"center", gap:12, paddingTop:16, borderTop:`1px solid ${T.border}` }}>
-          <Btn color={saved?T.green:T.accent} variant={saved?"default":"solid"} onClick={save}>
-            {saved ? "✓ SAVED" : "💾 SAVE CHANGES"}
-          </Btn>
-          {saved && <span style={{ color:T.green, fontSize:13 }}>Settings applied</span>}
+        <div style={{ marginTop:28, paddingTop:16, borderTop:`1px solid ${T.border}` }}>
+          <Btn variant="solid" onClick={save} disabled={saving}>{saving ? "SAVING…" : "💾 SAVE CHANGES"}</Btn>
         </div>
       </div>
+    </div>
+  );
+}
+
+// ─── Billing ─────────────────────────────────────────────────────────────────
+function BillingPage() {
+  const nextDate = new Date();
+  nextDate.setDate(nextDate.getDate() + 30);
+  const nextFmt = nextDate.toLocaleDateString("en-AU", { day: "numeric", month: "long", year: "numeric" });
+
+  return (
+    <div style={{ flex:1, overflow:"auto", padding:"28px 32px" }}>
+      <div style={{ display:"flex", gap:14, marginBottom:24, flexWrap:"wrap" }}>
+        <Metric label="Plan"           value="Standard"      color={T.accent} />
+        <Metric label="Monthly Cost"   value="$1,500 AUD"    color={T.green} />
+        <Metric label="Billing Cycle"  value="Monthly"       color={T.purple} />
+        <Metric label="Next Invoice"   value={nextFmt}       color={T.amber} />
+      </div>
+
+      <Card style={{ marginBottom:16 }}>
+        <CardHeader title="Subscription Details" sub="Your current Solar Admin AI plan" />
+        <div style={{ padding:"20px 22px", display:"flex", flexDirection:"column", gap:12 }}>
+          {[
+            { label:"Plan name",       value:"Solar Admin AI — Standard" },
+            { label:"AI voice calls",  value:"Unlimited" },
+            { label:"Lead scoring",    value:"Included" },
+            { label:"Email drafting",  value:"Included" },
+            { label:"CRM sync (GHL)",  value:"Included" },
+            { label:"Support",         value:"Business hours (AWST)" },
+          ].map(row => (
+            <div key={row.label} style={{ display:"flex", justifyContent:"space-between", alignItems:"center", padding:"8px 12px", background:T.surface, borderRadius:8 }}>
+              <span style={{ fontSize:13, color:T.text }}>{row.label}</span>
+              <span style={{ fontSize:13, fontFamily:"'JetBrains Mono',monospace", color:T.textLight }}>{row.value}</span>
+            </div>
+          ))}
+        </div>
+      </Card>
+
+      <Card>
+        <div style={{ padding:"18px 22px", display:"flex", alignItems:"center", gap:14 }}>
+          <span style={{ fontSize:20 }}>◈</span>
+          <div>
+            <div style={{ fontSize:13, color:T.textLight, fontWeight:600, marginBottom:3 }}>Need to update your billing details?</div>
+            <div style={{ fontSize:12, color:T.muted }}>Contact your account manager — we handle billing changes directly.</div>
+          </div>
+        </div>
+      </Card>
+    </div>
+  );
+}
+
+// ─── Support ──────────────────────────────────────────────────────────────────
+function SupportPage({ apiFetch }) {
+  const { toast } = useToast();
+  const [message, setMessage] = useState("");
+  const [sending, setSending] = useState(false);
+
+  const handleSend = async () => {
+    if (!message.trim()) { toast.warn("Please enter a message before sending"); return; }
+    setSending(true);
+    try {
+      const r = await apiFetch("/api/support/message", {
+        method: "POST",
+        body: JSON.stringify({ message: message.trim() }),
+      });
+      if (r.ok) {
+        toast.success("Message sent — we'll be in touch shortly");
+        setMessage("");
+      } else {
+        toast.error("Failed to send — please try again");
+      }
+    } catch { toast.error("Failed to send — please try again"); }
+    finally   { setSending(false); }
+  };
+
+  return (
+    <div style={{ flex:1, overflow:"auto", padding:"28px 32px" }}>
+      <Card style={{ maxWidth:620, marginBottom:16 }}>
+        <CardHeader title="Contact Support" sub="Send a message to your account manager" />
+        <div style={{ padding:"20px 22px", display:"flex", flexDirection:"column", gap:14 }}>
+          <div>
+            <div style={{ fontSize:11, color:T.muted, fontFamily:"'JetBrains Mono',monospace", letterSpacing:1, marginBottom:8 }}>MESSAGE</div>
+            <textarea
+              value={message}
+              onChange={e => setMessage(e.target.value)}
+              placeholder="Describe your issue or question…"
+              rows={6}
+              style={{
+                width:"100%", background:T.dim, border:`1px solid ${T.border}`,
+                color:T.textLight, borderRadius:8, padding:"10px 13px",
+                fontSize:13, lineHeight:1.55, resize:"vertical",
+                fontFamily:"'Plus Jakarta Sans',sans-serif",
+              }}
+            />
+          </div>
+          <div style={{ display:"flex", justifyContent:"flex-end" }}>
+            <Btn variant="solid" onClick={handleSend} disabled={sending}>
+              {sending ? "Sending…" : "Send Message"}
+            </Btn>
+          </div>
+        </div>
+      </Card>
+
+      <Card style={{ maxWidth:620 }}>
+        <div style={{ padding:"16px 22px", display:"flex", flexDirection:"column", gap:8 }}>
+          <div style={{ fontSize:12, color:T.muted, fontFamily:"'JetBrains Mono',monospace", letterSpacing:1, marginBottom:4 }}>OTHER WAYS TO REACH US</div>
+          {[
+            { label:"Response time", value:"Within 1 business day (AWST)" },
+            { label:"Hours",         value:"Mon–Fri 8:00am – 5:00pm AWST" },
+          ].map(row => (
+            <div key={row.label} style={{ display:"flex", gap:12 }}>
+              <span style={{ fontSize:12, color:T.muted, minWidth:110 }}>{row.label}</span>
+              <span style={{ fontSize:12, color:T.textLight }}>{row.value}</span>
+            </div>
+          ))}
+        </div>
+      </Card>
     </div>
   );
 }
@@ -1267,7 +1396,9 @@ export default function ClientDashboard() {
       case "emails":       return <EmailsPage />;
       case "agents":       return <AgentsPage      apiFetch={apiFetch} />;
       case "reporting":    return <ReportingPage   apiFetch={apiFetch} />;
-      case "settings":     return <SettingsPage    user={user} />;
+      case "settings":     return <SettingsPage    user={user} apiFetch={apiFetch} />;
+      case "billing":      return <BillingPage />;
+      case "support":      return <SupportPage     apiFetch={apiFetch} />;
       default:             return <OverviewPage    apiFetch={apiFetch} onNavigate={navigate} />;
     }
   };

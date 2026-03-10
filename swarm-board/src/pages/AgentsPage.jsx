@@ -192,7 +192,7 @@ function Toggle({ enabled, onChange, disabled }) {
 }
 
 /* ─── Info panel (side sheet) ─────────────────────────────────────────────── */
-function InfoPanel({ agent, onClose }) {
+function InfoPanel({ agent, isActive, onClose }) {
   if (!agent) return null;
   return (
     <>
@@ -226,12 +226,12 @@ function InfoPanel({ agent, onClose }) {
               </div>
               <span style={{
                 fontSize: 10, ...mono,
-                background: h(agent.color, 0.12),
-                border: `1px solid ${h(agent.color, 0.25)}`,
-                color: agent.color,
+                background: h(isActive ? agent.color : C.muted, 0.12),
+                border: `1px solid ${h(isActive ? agent.color : C.muted, 0.25)}`,
+                color: isActive ? agent.color : C.muted,
                 borderRadius: 20, padding: "2px 8px",
               }}>
-                ACTIVE AGENT
+                {isActive ? "ACTIVE" : "DISABLED"}
               </span>
             </div>
           </div>
@@ -621,7 +621,7 @@ export default function AgentsPage() {
         </div>
       </div>
 
-      <InfoPanel agent={selectedAgent} onClose={() => setSelectedAgent(null)} />
+      <InfoPanel agent={selectedAgent} isActive={selectedAgent ? agentState[selectedAgent.id] !== false : true} onClose={() => setSelectedAgent(null)} />
 
       {toast && (
         <div style={{

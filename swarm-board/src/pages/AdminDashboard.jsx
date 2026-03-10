@@ -1352,7 +1352,7 @@ function ReportingPage() {
   const [chartData, setChartData] = useState([]);
 
   useEffect(() => {
-    apiFetch("/api/reports/daily-activity")
+    apiFetch("/api/reports/weekly")
       .then(r => r.json())
       .then(d => setChartData(d.days || []))
       .catch(() => {});
@@ -1402,21 +1402,34 @@ function ReportingPage() {
         <Card>
           <CardHeader title="Lead Quality" sub="Score distribution this week" />
           <div style={{ padding: "20px 18px" }}>
-            {[
-              { label: "Hot (8–10)", pct: 35, color: T.green },
-              { label: "Warm (5–7)", pct: 45, color: T.amber },
-              { label: "Cold (0–4)", pct: 20, color: T.red },
-            ].map(row => (
-              <div key={row.label} style={{ marginBottom: 14 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
-                  <span style={{ fontSize: 12, color: T.text }}>{row.label}</span>
-                  <span style={{ fontSize: 12, color: row.color, fontFamily: "'JetBrains Mono', monospace" }}>{row.pct}%</span>
-                </div>
-                <div style={{ background: T.surface, borderRadius: 4, height: 6 }}>
-                  <div style={{ width: `${row.pct}%`, background: row.color, height: "100%", borderRadius: 4 }} />
-                </div>
-              </div>
-            ))}
+            {loading ? (
+              <div style={{ color: T.muted, fontSize: 13, textAlign: "center", paddingTop: 20 }}>Loading…</div>
+            ) : total === 0 ? (
+              <div style={{ color: T.muted, fontSize: 13, textAlign: "center", paddingTop: 20 }}>No lead data yet</div>
+            ) : (() => {
+              const hot  = stats?.this_week?.hot_leads  || 0;
+              const cold = stats?.this_week?.cold_leads || 0;
+              const warm = Math.max(0, total - hot - cold);
+              const tiers = [
+                { label: "Hot (8–10)", count: hot,  color: T.green },
+                { label: "Warm (5–7)", count: warm, color: T.amber },
+                { label: "Cold (0–4)", count: cold, color: T.red },
+              ];
+              return tiers.map(row => {
+                const pct = total > 0 ? Math.round((row.count / total) * 100) : 0;
+                return (
+                  <div key={row.label} style={{ marginBottom: 14 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6 }}>
+                      <span style={{ fontSize: 12, color: T.text }}>{row.label}</span>
+                      <span style={{ fontSize: 12, color: row.color, fontFamily: "'JetBrains Mono', monospace" }}>{pct}%</span>
+                    </div>
+                    <div style={{ background: T.surface, borderRadius: 4, height: 6 }}>
+                      <div style={{ width: `${pct}%`, background: row.color, height: "100%", borderRadius: 4 }} />
+                    </div>
+                  </div>
+                );
+              });
+            })()}
           </div>
         </Card>
 

@@ -4,6 +4,7 @@ Blueprint: auth_bp
   POST /api/auth/login           — email + password → JWT token + user info
   POST /api/auth/logout          — revoke current token
   GET  /api/auth/me              — return current user info
+  POST /api/auth/refresh         — issue new token, revoke old one (proactive renewal)
   POST /api/auth/change-password — update own password (requires current password)
 """
 
@@ -168,6 +169,37 @@ def logout():
         except Exception as e:
             logger.warning(f"[AUTH] logout revocation error: {e}")
     return jsonify({"ok": True}), 200
+
+
+@auth_bp.route("/api/auth/refresh", methods=["POST"])
+@require_auth()
+def refresh_token():
+    """POST /api/auth/refresh — issue a new JWT, revoke the current one.
+
+    Called proactively by the frontend 30 minutes before the current token
+    expires so the user is never hard-logged-out mid-session.
+    """
+    old_hash = _hash_token(g.token)
+    try:
+        with get_conn() as conn:
+            conn.execute(
+                "UPDATE auth_tokens SET revoked = 1 WHERE token_hash = ?",
+                (old_hash,)
+            )
+    except Exception as e:
+        logger.warning(f"[AUTH] refresh revocation error: {e}")
+
+    new_token = _make_token(g.user["id"], g.user["role"])
+    return jsonify({
+        "token": new_token,
+        "user": {
+            "id":        g.user["id"],
+            "email":     g.user["email"],
+            "name":      g.user["name"],
+            "role":      g.user["role"],
+            "client_id": g.user["client_id"],
+        },
+    }), 200
 
 
 @auth_bp.route("/api/auth/me", methods=["GET"])

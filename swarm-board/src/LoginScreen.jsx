@@ -31,6 +31,7 @@ const STYLES = `
   @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }
   @keyframes spin { from{transform:rotate(0deg)} to{transform:rotate(360deg)} }
   .login-card { animation: fadeUp .35s ease; }
+  .mono { font-family: 'Syne Mono', monospace; }
   input:focus { outline: 2px solid #F59E0B44; outline-offset: 0; }
 `;
 
