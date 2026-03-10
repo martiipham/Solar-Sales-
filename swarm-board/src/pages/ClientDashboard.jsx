@@ -11,6 +11,8 @@
  *   GET /api/swarm/leads       — lead list
  *   GET /api/agents/config     — agent toggles
  *   PATCH /api/agents/config   — update agent toggles
+ *   GET /api/reports/monthly   — month KPIs vs prior month
+ *   GET /api/reports/weekly    — 30-day daily breakdown
  */
 import { useState, useEffect, useCallback } from "react";
 import { useAuth } from "../AuthContext";
@@ -287,10 +289,10 @@ function OverviewPage({ apiFetch }) {
 
       {/* Metrics */}
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12 }}>
-        <Metric label="Calls This Week" value={loading ? "…" : (week.calls ?? "0")} accent={T.accent} />
-        <Metric label="Completed"       value={loading ? "…" : (week.completed ?? "0")} accent={T.green} />
+        <Metric label="Calls This Week" value={loading ? "…" : (week.calls ?? "—")} accent={T.accent} />
+        <Metric label="Completed"       value={loading ? "…" : (week.completed ?? "—")} accent={T.green} />
         <Metric label="Avg Duration"    value={loading ? "…" : (week.avg_duration ?? "—")} accent={T.amber} />
-        <Metric label="Booking Rate"    value={loading ? "…" : (week.booking_rate ?? "0")} unit="%" accent={T.purple} />
+        <Metric label="Booking Rate"    value={loading ? "…" : (week.booking_rate ?? "—")} unit={week.booking_rate != null ? "%" : undefined} accent={T.purple} />
       </div>
 
       {/* Hot leads */}
@@ -654,22 +656,139 @@ function AgentsPage({ apiFetch }) {
   );
 }
 
-function ReportingPage() {
+function ReportingPage({ apiFetch }) {
+  const [monthly, setMonthly]   = useState(null);
+  const [weekly, setWeekly]     = useState(null);
+  const [loading, setLoading]   = useState(true);
+
+  useEffect(() => {
+    if (!apiFetch) { setLoading(false); return; }
+    Promise.all([
+      apiFetch("/api/reports/monthly").then(r => r.json()).catch(() => null),
+      apiFetch("/api/reports/weekly?days=30").then(r => r.json()).catch(() => null),
+    ]).then(([m, w]) => {
+      setMonthly(m);
+      setWeekly(w);
+      setLoading(false);
+    });
+  }, [apiFetch]);
+
+  const curr = monthly?.calls?.current || {};
+  const leads = monthly?.leads?.current || {};
+  const totals = weekly?.totals || {};
+  const period = monthly?.period?.label || "";
+
   return (
-    <div style={{ padding: 24 }}>
-      <h2 style={{ margin: "0 0 20px", fontSize: 20, fontWeight: 700, color: T.text }}>
-        Reporting
-      </h2>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12, marginBottom: 20 }}>
-        <Metric label="Monthly Calls"    value="—" accent={T.accent} />
-        <Metric label="Conversion Rate"  value="—" unit="%" accent={T.green} />
-        <Metric label="Avg Lead Score"   value="—" accent={T.purple} />
+    <div style={{ padding: 24, display: "flex", flexDirection: "column", gap: 20 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <h2 style={{ margin: 0, fontSize: 20, fontWeight: 700, color: T.text }}>Reporting</h2>
+        {period && <Mono style={{ fontSize: 11, color: T.subtext }}>{period}</Mono>}
       </div>
+
+      {/* Month KPIs */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 12 }}>
+        <Metric
+          label="Monthly Calls"
+          value={loading ? "…" : (curr.calls ?? "—")}
+          sub={monthly?.calls?.vs_prior ? `${monthly.calls.vs_prior} vs last month` : undefined}
+          accent={T.accent}
+        />
+        <Metric
+          label="Conversion Rate"
+          value={loading ? "…" : (leads.conversion_rate ?? "—")}
+          unit={leads.conversion_rate != null ? "%" : undefined}
+          sub={monthly?.leads?.vs_prior ? `${monthly.leads.vs_prior} vs last month` : undefined}
+          accent={T.green}
+        />
+        <Metric
+          label="Avg Lead Score"
+          value={loading ? "…" : (leads.avg_score ?? "—")}
+          sub={leads.hot != null ? `${leads.hot} hot leads` : undefined}
+          accent={T.purple}
+        />
+      </div>
+
+      {/* 30-day breakdown */}
       <Card>
-        <div style={{ padding: 32, textAlign: "center", color: T.muted, fontSize: 13 }}>
-          Detailed reports will appear here as your AI system accumulates data.
+        <CardHeader title="Last 30 Days" sub="Daily activity" />
+        <div style={{ padding: "16px 20px" }}>
+          {loading ? (
+            <div style={{ color: T.muted, fontSize: 13 }}>Loading…</div>
+          ) : !weekly?.days?.length ? (
+            <div style={{ color: T.muted, fontSize: 13 }}>No data yet — activity will appear as your AI handles calls.</div>
+          ) : (
+            <>
+              {/* Totals summary */}
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 20 }}>
+                {[
+                  { label: "Calls",       value: totals.calls ?? 0,       color: T.accent },
+                  { label: "Leads",       value: totals.leads ?? 0,       color: T.amber },
+                  { label: "Hot Leads",   value: totals.hot_leads ?? 0,   color: T.red },
+                  { label: "Conversions", value: totals.conversions ?? 0, color: T.green },
+                ].map(({ label, value, color }) => (
+                  <div key={label} style={{
+                    background: T.bg, border: `1px solid ${T.border}`,
+                    borderRadius: 8, padding: "10px 14px",
+                  }}>
+                    <div style={{ fontSize: 9, color: T.muted, letterSpacing: 2,
+                      textTransform: "uppercase", marginBottom: 4,
+                      fontFamily: "'JetBrains Mono', monospace" }}>{label}</div>
+                    <div style={{ fontSize: 22, fontWeight: 700, color,
+                      fontFamily: "'JetBrains Mono', monospace" }}>{value}</div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Bar chart — calls per day */}
+              <div style={{ fontSize: 10, color: T.muted, letterSpacing: 2,
+                textTransform: "uppercase", marginBottom: 8,
+                fontFamily: "'JetBrains Mono', monospace" }}>
+                Daily Calls
+              </div>
+              <div style={{ display: "flex", alignItems: "flex-end", gap: 2, height: 60, marginBottom: 8 }}>
+                {weekly.days.map(d => {
+                  const maxCalls = Math.max(...weekly.days.map(x => x.calls), 1);
+                  const pct = (d.calls / maxCalls) * 100;
+                  return (
+                    <div
+                      key={d.date}
+                      title={`${d.date}: ${d.calls} calls`}
+                      style={{
+                        flex: 1, minWidth: 0, height: `${Math.max(pct, 2)}%`,
+                        background: d.calls > 0 ? a(T.accent, 0.5) : a(T.muted, 0.15),
+                        borderRadius: 2, cursor: "default",
+                        transition: "background 0.15s",
+                      }}
+                      onMouseEnter={e => { e.currentTarget.style.background = d.calls > 0 ? T.accent : a(T.muted, 0.3); }}
+                      onMouseLeave={e => { e.currentTarget.style.background = d.calls > 0 ? a(T.accent, 0.5) : a(T.muted, 0.15); }}
+                    />
+                  );
+                })}
+              </div>
+              <div style={{ display: "flex", justifyContent: "space-between",
+                fontSize: 9, color: T.muted, fontFamily: "'JetBrains Mono', monospace" }}>
+                <span>{weekly.days[0]?.date?.slice(5)}</span>
+                <span>{weekly.days[weekly.days.length - 1]?.date?.slice(5)}</span>
+              </div>
+            </>
+          )}
         </div>
       </Card>
+
+      {/* Highlights */}
+      {monthly?.highlights?.length > 0 && (
+        <Card>
+          <CardHeader title="Highlights" sub="Key observations this month" />
+          <div style={{ padding: "12px 20px 16px", display: "flex", flexDirection: "column", gap: 8 }}>
+            {monthly.highlights.map((h, i) => (
+              <div key={i} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <span style={{ color: T.accent, fontSize: 12 }}>◆</span>
+                <span style={{ fontSize: 13, color: T.text }}>{h}</span>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
     </div>
   );
 }
@@ -724,7 +843,7 @@ export default function ClientDashboard() {
       case "calls":     return <CallsPage     apiFetch={apiFetch} />;
       case "emails":    return <EmailsPage />;
       case "agents":    return <AgentsPage    apiFetch={apiFetch} />;
-      case "reporting": return <ReportingPage />;
+      case "reporting": return <ReportingPage apiFetch={apiFetch} />;
       case "settings":  return <SettingsPage  user={user} />;
       default:          return <OverviewPage  apiFetch={apiFetch} />;
     }

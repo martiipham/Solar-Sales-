@@ -1678,6 +1678,30 @@ export default function AdminDashboard({ currentPage, onNavigate }) {
   const roleColors = { owner: T.amber, admin: T.accent, client: T.green };
   const roleColor = roleColors[role] || T.muted;
 
+  // Client preview — render fullscreen, bypassing admin layout entirely
+  if (currentPage === "client-view") {
+    return (
+      <div style={{ position: "relative" }}>
+        <ClientDashboard />
+        <button
+          onClick={() => onNavigate("overview")}
+          style={{
+            position: "fixed", top: 14, right: 14, zIndex: 9999,
+            background: "#0B1222", border: "1px solid #22D3EE",
+            color: "#22D3EE", borderRadius: 20, padding: "7px 18px",
+            fontSize: 12, fontFamily: "'JetBrains Mono', monospace",
+            cursor: "pointer", boxShadow: "0 2px 16px rgba(34,211,238,0.3)",
+            letterSpacing: 1,
+          }}
+          onMouseEnter={e => e.currentTarget.style.background = "#112030"}
+          onMouseLeave={e => e.currentTarget.style.background = "#0B1222"}
+        >
+          ← EXIT PREVIEW
+        </button>
+      </div>
+    );
+  }
+
   const meta = PAGE_META[currentPage] || { title: "Dashboard", sub: "" };
 
   const badgeCounts = { hotLeads, pendingEmails };
