@@ -310,11 +310,32 @@ def retell_response():
 
     except Exception as e:
         logger.error(f"[VOICE] response error: {e}")
+        response_id = data.get("response_id", 0) if "data" in dir() else 0
+        transfer_phone = config.get("TRANSFER_PHONE", "")
+
+        # Alert the team via Slack
+        try:
+            from notifications.slack_notifier import alert_service_down
+            err_detail: str = str(e)
+            alert_service_down("Voice AI (GPT-4o)", err_detail[:120])  # type: ignore[misc]
+        except Exception:
+            pass
+
+        # If a transfer number is set, route the live call to a human immediately
+        if transfer_phone:
+            return jsonify({
+                "response_id":      response_id,
+                "content":          "I'm just going to connect you with one of our team members right now — please hold for a moment.",
+                "content_complete": True,
+                "transfer_call":    {"number": transfer_phone},
+            }), 200
+
+        # No transfer number configured — apologise and end gracefully
         return jsonify({
-            "response_id": data.get("response_id", 0) if "data" in dir() else 0,
-            "content": "I'm sorry, I had a technical issue. Let me get someone to call you back shortly.",
+            "response_id":      response_id,
+            "content":          "I'm very sorry, I'm having a technical issue. Someone from our team will call you back within the hour.",
             "content_complete": True,
-            "end_call": False,
+            "end_call":         True,
         }), 200
 
 

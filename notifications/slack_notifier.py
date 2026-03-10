@@ -306,6 +306,52 @@ def notify_email_draft(email_id: int, subject: str, from_email: str,
     return _post({"blocks": blocks})
 
 
+def alert_service_down(service: str, detail: str) -> bool:
+    """Send a service-down alert to Slack.
+
+    Args:
+        service: Human-readable service name (e.g. 'Voice AI')
+        detail: Error detail — HTTP status or exception message
+    """
+    payload = {
+        "blocks": [
+            _block("*🔴 SERVICE DOWN — Solar Admin AI*"),
+            _block(
+                f"*Service:* {service}\n"
+                f"*Error:* {detail}\n"
+                f"*Time:* {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}"
+            ),
+            _block(
+                "_Calls are being routed to the backup number. "
+                "Check the server and restart the affected process._"
+            ),
+        ]
+    }
+    logger.warning(f"[SLACK] Service down alert: {service}")
+    return _post(payload)
+
+
+def alert_service_recovered(service: str, down_since: str) -> bool:
+    """Send a service-recovered alert to Slack.
+
+    Args:
+        service: Human-readable service name
+        down_since: ISO timestamp when the service first went down
+    """
+    payload = {
+        "blocks": [
+            _block("*✅ SERVICE RECOVERED — Solar Admin AI*"),
+            _block(
+                f"*Service:* {service}\n"
+                f"*Recovered at:* {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}\n"
+                f"*Was down since:* {down_since}"
+            ),
+        ]
+    }
+    logger.info(f"[SLACK] Service recovered: {service}")
+    return _post(payload)
+
+
 def post_message(text: str) -> bool:
     """Send a plain text message to Slack.
 

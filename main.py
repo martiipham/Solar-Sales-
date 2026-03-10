@@ -62,6 +62,16 @@ def setup_scheduler():
         max_instances=1,
     )
 
+    # Health Monitor — every 5 minutes
+    scheduler.add_job(
+        _run_health_check,
+        trigger=IntervalTrigger(minutes=5),
+        id="health_monitor",
+        name="Service Health Monitor",
+        replace_existing=True,
+        max_instances=1,
+    )
+
     return scheduler
 
 
@@ -98,6 +108,20 @@ def _log_agent_run(job_id: str, status: str = "ok", notes: str = ""):
         insert("agent_run_log", {"job_id": job_id, "status": status, "notes": notes})
     except Exception:
         pass
+
+
+def _run_health_check():
+    """Scheduled job: check all service health endpoints and alert on failure."""
+    job = "health_monitor"
+    if not _agent_enabled("health_monitor"):
+        return
+    try:
+        from monitor.health_monitor import run_health_check
+        run_health_check()
+        _log_agent_run(job)
+    except Exception as e:
+        logger.error(f"[SCHEDULER] Health check failed: {e}")
+        _log_agent_run(job, "error", str(e)[:200])
 
 
 def _run_crm_sync():
@@ -220,6 +244,7 @@ def print_banner():
     print(f"\n  SCHEDULER:")
     print(f"    CRM Sync:         Every 30 minutes")
     print(f"    Lead Check:       Every 60 minutes")
+    print(f"    Health Monitor:   Every 5 minutes")
     print(f"\n  CONFIG:")
     print(f"    OpenAI:           {'OK' if config.is_configured() else 'NOT SET'}")
     print(f"    GHL:              {'OK' if config.GHL_API_KEY else 'NOT SET'}")
@@ -285,7 +310,7 @@ def main():
     # Start scheduler
     scheduler = setup_scheduler()
     scheduler.start()
-    print("[MAIN] Scheduler started — CRM sync every 30min, lead check every 60min")
+    print("[MAIN] Scheduler started — CRM sync every 30min, lead check every 60min, health check every 5min")
 
     # Keep main thread alive
     try:

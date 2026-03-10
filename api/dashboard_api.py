@@ -179,6 +179,30 @@ def health():
     }), 200
 
 
+# ── Support message ──────────────────────────────────────────────────────────
+
+@dashboard_app.route("/api/support/message", methods=["POST"])
+def support_message():
+    """Accept a support message from the client portal and forward to Slack.
+
+    Request body:
+        message: str — the client's message text
+    """
+    try:
+        data = request.get_json(force=True) or {}
+        msg  = str(data.get("message", "")).strip()[:1000]
+        if not msg:
+            return jsonify({"error": "message required"}), 400
+
+        from notifications.slack_notifier import post_message
+        post_message(f"*Support message from client portal:*\n{msg}")
+        logger.info("[DASH API] Support message forwarded to Slack")
+        return jsonify({"ok": True}), 200
+    except Exception as e:
+        logger.error(f"[DASH API] support_message error: {e}")
+        return jsonify({"error": "Internal server error"}), 500
+
+
 # ── Agent config endpoints ────────────────────────────────────────────────────
 
 @dashboard_app.route("/api/agents/config", methods=["GET"])
