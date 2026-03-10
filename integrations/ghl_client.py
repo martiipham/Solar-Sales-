@@ -194,6 +194,118 @@ def get_pipeline_stages(pipeline_id: str) -> list:
     return result.get("stages", [])
 
 
+def get_contacts(location_id: str | None = None, limit: int = 100) -> list:
+    """Fetch contacts from GHL, sorted by most recently updated.
+
+    Args:
+        location_id: GHL location ID (defaults to config value)
+        limit: Max contacts to return
+
+    Returns:
+        List of contact dicts
+    """
+    loc = location_id or config.GHL_LOCATION_ID
+    result = _request(
+        "GET",
+        f"/contacts/?locationId={loc}&limit={limit}&sortBy=dateUpdated&sortOrder=desc",
+    )
+    if result:
+        return result.get("contacts", [])
+    return []
+
+
+def update_contact(contact_id: str, data: dict, location_id: str | None = None) -> dict | None:
+    """Update a contact record with a full data dict.
+
+    Args:
+        contact_id: GHL contact ID
+        data: Dict of fields to update (name, email, phone, customFields, etc.)
+        location_id: GHL location ID (defaults to config value)
+
+    Returns:
+        Updated contact dict or None
+    """
+    loc = location_id or config.GHL_LOCATION_ID
+    payload = {"locationId": loc, **data}
+    result = _request("PUT", f"/contacts/{contact_id}", payload)
+    if result:
+        print(f"[GHL] Contact updated: {contact_id}")
+    return result
+
+
+def add_note(contact_id: str, note_text: str, location_id: str | None = None) -> dict | None:
+    """Add a note to a GHL contact record.
+
+    Args:
+        contact_id: GHL contact ID
+        note_text: Note body text
+        location_id: GHL location ID (defaults to config value)
+
+    Returns:
+        Created note dict or None
+    """
+    loc = location_id or config.GHL_LOCATION_ID
+    result = _request("POST", f"/contacts/{contact_id}/notes", {
+        "body":       note_text,
+        "locationId": loc,
+    })
+    if result:
+        print(f"[GHL] Note added to contact {contact_id}: {note_text[:50]}")
+    return result
+
+
+def create_opportunity(
+    contact_id: str,
+    pipeline_id: str,
+    stage_id: str,
+    value: float = 0,
+    location_id: str | None = None,
+) -> dict | None:
+    """Create an opportunity (deal) in a GHL pipeline for a contact.
+
+    Args:
+        contact_id: GHL contact ID
+        pipeline_id: GHL pipeline ID
+        stage_id: GHL pipeline stage ID
+        value: Monetary value of the opportunity (AUD)
+        location_id: GHL location ID (defaults to config value)
+
+    Returns:
+        Created opportunity dict or None
+    """
+    loc = location_id or config.GHL_LOCATION_ID
+    result = _request("POST", "/opportunities/", {
+        "locationId":      loc,
+        "pipelineId":      pipeline_id,
+        "pipelineStageId": stage_id,
+        "contactId":       contact_id,
+        "name":            f"Solar Lead — {datetime.utcnow().strftime('%Y-%m-%d')}",
+        "status":          "open",
+        "monetaryValue":   value,
+    })
+    if result:
+        opp_id = result.get("opportunity", {}).get("id", "unknown")
+        print(f"[GHL] Opportunity created: {opp_id} for contact {contact_id}")
+    return result
+
+
+def get_conversations(contact_id: str, location_id: str | None = None) -> list:
+    """Fetch email and SMS conversation history for a contact.
+
+    Args:
+        contact_id: GHL contact ID
+        location_id: GHL location ID (defaults to config value)
+
+    Returns:
+        List of conversation dicts
+    """
+    loc = location_id or config.GHL_LOCATION_ID
+    result = _request("GET", f"/conversations/?locationId={loc}&contactId={contact_id}")
+    if result:
+        return result.get("conversations", [])
+    return []
+
+
 def is_configured() -> bool:
     """Check if GHL API credentials are properly configured.
 
@@ -201,3 +313,139 @@ def is_configured() -> bool:
         True if API key and location ID are set
     """
     return bool(config.GHL_API_KEY and config.GHL_LOCATION_ID)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GHLClient CLASS — object-oriented wrapper for convenience
+# ─────────────────────────────────────────────────────────────────────────────
+
+class GHLClient:
+    """Object-oriented GHL API client.
+
+    Wraps all module-level functions so callers can instantiate with
+    custom credentials and use methods with explicit location_id signatures.
+
+    Usage:
+        client = GHLClient()
+        contacts = client.get_contacts(limit=50)
+        client.add_note(contact_id, "AI score: 8/10")
+    """
+
+    def __init__(self, api_key: str | None = None, location_id: str | None = None):
+        """Initialise the GHL client.
+
+        Args:
+            api_key: GHL API key (defaults to config.GHL_API_KEY)
+            location_id: GHL location ID (defaults to config.GHL_LOCATION_ID)
+        """
+        self.api_key     = api_key     or config.GHL_API_KEY
+        self.location_id = location_id or config.GHL_LOCATION_ID
+
+    def get_contacts(self, location_id: str | None = None, limit: int = 100) -> list:
+        """Fetch contacts from GHL sorted by most recently updated.
+
+        Args:
+            location_id: Override location ID
+            limit: Max contacts to return
+
+        Returns:
+            List of contact dicts
+        """
+        return get_contacts(location_id or self.location_id, limit)
+
+    def create_contact(self, location_id: str | None = None, data: dict | None = None) -> dict | None:
+        """Create a new contact in GHL.
+
+        Args:
+            location_id: Override location ID
+            data: Contact data dict
+
+        Returns:
+            Created contact dict or None
+        """
+        payload = {"locationId": location_id or self.location_id, **(data or {})}
+        return create_contact(payload)
+
+    def update_contact(self, contact_id: str, data: dict, location_id: str | None = None) -> dict | None:
+        """Update a contact with a full data dict.
+
+        Args:
+            contact_id: GHL contact ID
+            data: Fields to update
+            location_id: Override location ID
+
+        Returns:
+            Updated contact dict or None
+        """
+        return update_contact(contact_id, data, location_id or self.location_id)
+
+    def add_note(self, contact_id: str, note_text: str, location_id: str | None = None) -> dict | None:
+        """Add a note to a GHL contact.
+
+        Args:
+            contact_id: GHL contact ID
+            note_text: Note body
+            location_id: Override location ID
+
+        Returns:
+            Created note dict or None
+        """
+        return add_note(contact_id, note_text, location_id or self.location_id)
+
+    def create_opportunity(
+        self,
+        contact_id: str,
+        pipeline_id: str,
+        stage_id: str,
+        value: float = 0,
+        location_id: str | None = None,
+    ) -> dict | None:
+        """Create an opportunity in a GHL pipeline.
+
+        Args:
+            contact_id: GHL contact ID
+            pipeline_id: Pipeline ID
+            stage_id: Stage ID
+            value: Monetary value (AUD)
+            location_id: Override location ID
+
+        Returns:
+            Created opportunity dict or None
+        """
+        return create_opportunity(
+            contact_id, pipeline_id, stage_id, value,
+            location_id or self.location_id,
+        )
+
+    def send_sms(self, location_id: str | None = None, contact_id: str | None = None, message: str = "") -> dict | None:
+        """Send an SMS to a GHL contact.
+
+        Args:
+            location_id: Override location ID
+            contact_id: GHL contact ID
+            message: SMS text
+
+        Returns:
+            Result dict or None
+        """
+        return send_sms(contact_id or "", message)
+
+    def get_conversations(self, contact_id: str, location_id: str | None = None) -> list:
+        """Fetch conversation history for a contact.
+
+        Args:
+            contact_id: GHL contact ID
+            location_id: Override location ID
+
+        Returns:
+            List of conversation dicts
+        """
+        return get_conversations(contact_id, location_id or self.location_id)
+
+    def is_configured(self) -> bool:
+        """Check if this client has credentials configured.
+
+        Returns:
+            True if both api_key and location_id are set
+        """
+        return bool(self.api_key and self.location_id)

@@ -47,19 +47,33 @@ def log_lead_qualified(lead_data: dict) -> None:
     _append({"type": "lead_qualified", "data": lead_data})
 
 
-def log_experiment_approved(experiment_id: str) -> None:
+def log_experiment_approved(experiment_id: str, approved_by: str = None, budget: float = None) -> None:
     """Record that an experiment was approved by a human operator.
 
     Args:
         experiment_id: Unique experiment identifier
+        approved_by: Who approved it (e.g. 'cli', 'slack')
+        budget: Budget allocated in AUD
     """
-    _append({"type": "experiment_approved", "experiment_id": experiment_id})
+    _append({
+        "type": "experiment_approved",
+        "experiment_id": experiment_id,
+        "approved_by": approved_by,
+        "budget_aud": budget,
+    })
 
 
-def log_experiment_killed(experiment_id: str) -> None:
+def log_experiment_killed(experiment_id: str, reason: str = None, killed_by: str = None) -> None:
     """Record that an experiment was killed by a human operator.
 
     Args:
         experiment_id: Unique experiment identifier
+        reason: Why it was killed
+        killed_by: Who killed it (e.g. 'cli', 'circuit_breaker')
     """
-    _append({"type": "experiment_killed", "experiment_id": experiment_id})
+    _append({
+        "type": "experiment_killed",
+        "experiment_id": experiment_id,
+        "reason": reason,
+        "killed_by": killed_by,
+    })

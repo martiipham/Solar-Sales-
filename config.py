@@ -73,7 +73,10 @@ PORT_GHL_WEBHOOKS  = int(get("PORT_GHL_WEBHOOKS",  "5001"))
 PORT_DASHBOARD_API = int(get("PORT_DASHBOARD_API", "5003"))  # swarm-board live feed
 
 # GoHighLevel pipeline id (optional — used by crm_sync for stage counts)
-GHL_PIPELINE_ID = get("GHL_PIPELINE_ID", "")
+GHL_PIPELINE_ID   = get("GHL_PIPELINE_ID", "")
+GHL_STAGE_HOT     = get("GHL_STAGE_HOT", "")
+GHL_STAGE_BOOKED  = get("GHL_STAGE_BOOKED", "")
+GHL_STAGE_NURTURE = get("GHL_STAGE_NURTURE", "")
 
 # Database
 DATABASE_PATH = get("DATABASE_PATH", "swarm.db")
@@ -108,9 +111,11 @@ EXPLORE_CTR_THRESHOLD = 0.02  # 2% CTR triggers paid spend
 PHEROMONE_DECAY_DAYS = 7     # Start decaying after 7 days
 PHEROMONE_DECAY_RATE = 0.50  # 50% weight loss per day after threshold
 
-# ── Voice AI (Retell + ElevenLabs)
+# ── Voice AI (Retell)
 RETELL_API_KEY           = get("RETELL_API_KEY", "")
+RETELL_AGENT_ID          = get("RETELL_AGENT_ID", "")
 RETELL_DEFAULT_VOICE_ID  = get("RETELL_DEFAULT_VOICE_ID", "11labs-Adrian")
+RETELL_WEBHOOK_SECRET    = get("RETELL_WEBHOOK_SECRET", "")
 ELEVENLABS_API_KEY       = get("ELEVENLABS_API_KEY", "")
 ELEVENLABS_DEFAULT_VOICE = get("ELEVENLABS_DEFAULT_VOICE", "")
 PORT_VOICE_WEBHOOK       = int(get("PORT_VOICE_WEBHOOK", "5002"))
@@ -118,11 +123,65 @@ VOICE_WEBHOOK_BASE_URL   = get("VOICE_WEBHOOK_BASE_URL", "http://localhost:5002"
 TRANSFER_PHONE           = get("TRANSFER_PHONE", "")
 DEFAULT_CLIENT_ID        = get("DEFAULT_CLIENT_ID", "default")
 
+# ── Auth
+JWT_SECRET = get("JWT_SECRET", "")
+
+# ── Cal.com (booking)
+CALCOM_API_KEY        = get("CALCOM_API_KEY", "")
+CALCOM_EVENT_TYPE_ID  = get("CALCOM_EVENT_TYPE_ID", "")
+CALCOM_BOOKING_URL    = get("CALCOM_BOOKING_URL", "")
+
+# ── Twilio (SMS confirmations)
+TWILIO_ACCOUNT_SID  = get("TWILIO_ACCOUNT_SID", "")
+TWILIO_AUTH_TOKEN   = get("TWILIO_AUTH_TOKEN", "")
+TWILIO_FROM_NUMBER  = get("TWILIO_FROM_NUMBER", "")
+
 # ── Email processing (optional IMAP polling)
 IMAP_HOST   = get("IMAP_HOST", "")
 IMAP_USER   = get("IMAP_USER", "")
 IMAP_PASS   = get("IMAP_PASS", "")
 IMAP_FOLDER = get("IMAP_FOLDER", "INBOX")
+
+
+def check_required_env_vars() -> None:
+    """Warn on startup if any critical environment variables are missing.
+
+    Prints a warning for each missing key and exits if OPENAI_API_KEY is absent,
+    since the system cannot function without it.
+    """
+    warnings = []
+
+    critical = {
+        "OPENAI_API_KEY": OPENAI_API_KEY,
+        "GATE_API_KEY":   GATE_API_KEY,
+    }
+    recommended = {
+        "GHL_API_KEY":           GHL_API_KEY,
+        "GHL_LOCATION_ID":       GHL_LOCATION_ID,
+        "GHL_WEBHOOK_SECRET":    GHL_WEBHOOK_SECRET,
+        "RETELL_WEBHOOK_SECRET": RETELL_WEBHOOK_SECRET,
+        "JWT_SECRET":            JWT_SECRET,
+        "SLACK_SIGNING_SECRET":  SLACK_SIGNING_SECRET,
+    }
+
+    for key, val in critical.items():
+        if not val or val.startswith("your-") or val.startswith("sk-your-"):
+            warnings.append(f"  [CRITICAL] {key} is not set")
+
+    for key, val in recommended.items():
+        if not val:
+            warnings.append(f"  [WARNING]  {key} is not set (recommended for production)")
+
+    if warnings:
+        print("[CONFIG] Startup environment check:")
+        for w in warnings:
+            print(w)
+        # Exit only if a truly critical key is missing
+        critical_missing = [w for w in warnings if "[CRITICAL]" in w]
+        if critical_missing:
+            import sys
+            print("[CONFIG] Aborting — set missing critical keys in .env and restart.")
+            sys.exit(1)
 
 
 def is_configured() -> bool:

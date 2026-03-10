@@ -1,213 +1,227 @@
-# Setup & Deployment Guide
+# Setup Guide — New Client Onboarding
 
-This guide walks through setting up the Solar Swarm from scratch on a fresh machine.
+Step-by-step guide to deploying Solar Sales AI Admin for a new solar SME client.
 
 ---
 
 ## Prerequisites
 
-- Python 3.11+
-- Node.js 18+ and npm (for the swarm board)
-- A terminal and basic familiarity with the command line
-- The following API accounts (details below):
-  - OpenAI (required)
-  - GoHighLevel (required for production; mock mode works without it)
-  - Slack (optional — Slack alerts and interactive buttons)
-  - Retell AI (optional — voice call automation)
-  - ElevenLabs (optional — premium voice quality)
+Before starting, confirm you have:
+
+- **Python 3.11+** — `python3 --version`
+- **Node.js 18+** and npm — `node --version`
+- **Git** — `git --version`
+- A publicly accessible server (or ngrok for testing)
+- The following accounts and API keys ready:
+
+| Service | Required? | Purpose |
+|---------|-----------|---------|
+| OpenAI | Required | GPT-4o for qualification, email triage, proposals |
+| GoHighLevel | Required | CRM — contacts, pipeline, webhooks, messaging |
+| Retell AI | Required for voice | AI voice agent on inbound/outbound calls |
+| Slack | Recommended | HOT LEAD alerts, error notifications, approvals |
 
 ---
 
-## Step 1: Clone or extract the project
+## Step 1 — Clone and install
 
 ```bash
-# If using git
-git clone <your-repo-url> solar-swarm
-cd solar-swarm
+git clone <your-repo-url> solar-sales
+cd solar-sales
 
-# If you downloaded a ZIP
-unzip Solar-Concept-main.zip
-cd Solar-Concept-main
-```
-
----
-
-## Step 2: Create a Python virtual environment
-
-```bash
+# Create Python virtual environment
 python3 -m venv .venv
-source .venv/bin/activate   # macOS/Linux
-# .venv\Scripts\activate    # Windows
-```
+source .venv/bin/activate        # macOS/Linux
+# .venv\Scripts\activate         # Windows
 
----
-
-## Step 3: Install Python dependencies
-
-```bash
+# Install dependencies
 pip install -r requirements.txt
 ```
 
-This installs:
-
-| Package | Purpose |
-|---------|---------|
-| `openai` | GPT-4o for all AI tasks |
-| `flask` | API server |
-| `flask-cors` | CORS for the swarm board |
-| `flask-limiter` | Rate limiting on auth endpoints |
-| `apscheduler` | Scheduled agent jobs |
-| `python-dotenv` | `.env` file loading |
-| `requests` | HTTP calls to GHL, Retell, etc. |
-| `pytz` | Timezone handling |
-| `rich` | Formatted terminal output |
-| `simple-salesforce` | Salesforce CRM support |
-| `slack-sdk` | Slack notifications |
-| `PyJWT` | JWT auth tokens |
-| `bcrypt` | Password hashing |
-
 ---
 
-## Step 4: Configure environment variables
-
-Copy the example env file:
+## Step 2 — Configure .env
 
 ```bash
 cp .env.example .env
 ```
 
-Open `.env` and fill in your values:
+Open `.env` and fill in the values. Here's what each key does and where to find it:
 
 ```env
-# ── Required ───────────────────────────────────────────────────
-OPENAI_API_KEY=sk-...           # Get from platform.openai.com
+# ── Required ──────────────────────────────────────────────────────
+OPENAI_API_KEY=sk-...
+# → platform.openai.com → API Keys → Create new secret key
 
-# ── GoHighLevel (primary CRM) ──────────────────────────────────
-GHL_API_KEY=                    # Settings → Integrations → API → Private Integration Key
-GHL_LOCATION_ID=                # Settings → Business Profile → Location ID in URL
-GHL_PIPELINE_ID=                # CRM → Pipelines → pipeline ID from URL
-GHL_WEBHOOK_SECRET=             # Settings → Integrations → Webhooks → Signing Secret
+# ── GoHighLevel ───────────────────────────────────────────────────
+GHL_API_KEY=
+# → GHL → Settings → Integrations → API → Private Integration Key
+# → Needs scopes: contacts.readonly, contacts.write, opportunities.write,
+#   conversations.readonly, conversations.write
 
-# ── Slack (optional — for notifications and interactive buttons) ─
-SLACK_WEBHOOK_URL=              # Create at api.slack.com/apps → Incoming Webhooks
-SLACK_SIGNING_SECRET=           # App credentials → Signing Secret (for /slack/actions)
+GHL_LOCATION_ID=
+# → GHL → Settings → Business Profile
+# → Copy the location ID from the URL (e.g. /location/abc123def456)
 
-# ── Voice AI (optional) ────────────────────────────────────────
-RETELL_API_KEY=                 # app.retellai.com → API Keys
-ELEVENLABS_API_KEY=             # elevenlabs.io → Profile → API Key
-ELEVENLABS_DEFAULT_VOICE=       # Voice ID from ElevenLabs dashboard
+GHL_PIPELINE_ID=
+# → GHL → CRM → Pipelines → click your pipeline → copy ID from URL
 
-# ── Capital ────────────────────────────────────────────────────
-WEEKLY_BUDGET_AUD=500           # Total weekly experiment budget
+GHL_WEBHOOK_SECRET=
+# → GHL → Settings → Integrations → Webhooks → copy Signing Secret
+# → (set this after you create the webhooks in Step 5)
 
-# ── Security ───────────────────────────────────────────────────
-GATE_API_KEY=                   # Choose any strong random string for the Human Gate API
+# ── Retell AI ─────────────────────────────────────────────────────
+RETELL_API_KEY=
+# → app.retellai.com → Settings → API Keys
 
-# ── Ports ──────────────────────────────────────────────────────
-PORT_HUMAN_GATE=5000
+# ── Slack ─────────────────────────────────────────────────────────
+SLACK_WEBHOOK_URL=
+# → api.slack.com → Your Apps → Incoming Webhooks → Add New Webhook
+# → Choose a channel (e.g. #solar-leads)
+
+# ── Security ──────────────────────────────────────────────────────
+GATE_API_KEY=your-strong-random-string
+# → Generate with: python3 -c "import secrets; print(secrets.token_hex(32))"
+# → Used to authenticate calls to the Human Gate API (:5010)
+
+# ── Ports (defaults are fine unless you have conflicts) ────────────
+PORT_HUMAN_GATE=5010
 PORT_GHL_WEBHOOKS=5001
 PORT_VOICE_WEBHOOK=5002
 PORT_DASHBOARD_API=5003
-
-# ── HubSpot (optional fallback CRM) ────────────────────────────
-HUBSPOT_API_KEY=
-
-# ── Salesforce (optional fallback CRM) ─────────────────────────
-SALESFORCE_USERNAME=
-SALESFORCE_PASSWORD=
-SALESFORCE_SECURITY_TOKEN=
-SALESFORCE_CLIENT_ID=
-SALESFORCE_CLIENT_SECRET=
 ```
 
-The system works with only `OPENAI_API_KEY` set. All other integrations fall back to mock/demo mode when their keys are missing.
+The system works with only `OPENAI_API_KEY` and `GHL_API_KEY` set. Voice calls are
+skipped without `RETELL_API_KEY`. Slack alerts are skipped without `SLACK_WEBHOOK_URL`.
 
 ---
 
-## Step 5: Initialise the database
+## Step 3 — Initialise the database
 
 ```bash
 python3 -c "from memory.database import init_db; init_db()"
 ```
 
-This creates `swarm.db` in the project root with all tables. The `DATABASE_PATH` env var overrides the default location.
-
----
-
-## Step 6: Create required directories
-
-```bash
-mkdir -p proposals reports memory/knowledge public
+Expected output:
+```
+[DB] Initialising database...
+[DB] Database ready.
 ```
 
-| Directory | Purpose |
-|-----------|---------|
-| `proposals/` | Generated proposal text files |
-| `reports/` | Weekly client report files |
-| `memory/knowledge/` | Warm memory JSON files |
-| `public/` | `board-state.json` for the swarm board |
+This creates `solar_admin.db` in the project root with all tables.
 
 ---
 
-## Step 7: Create board-state.json
+## Step 4 — Set up the Retell AI agent
 
+In the Retell dashboard (app.retellai.com):
+
+1. Go to **Agents → Create Agent**
+2. Set **Agent name**: `[ClientName] Solar Receptionist`
+3. Under **LLM**: select Custom LLM → set the endpoint to your server:
+   `https://your-server.com/voice/response`
+4. Under **General Settings**:
+   - Begin message: *"Thanks for calling [Company Name], this is [Agent Name]. How can I help you today?"*
+   - Language: English (Australian)
+5. Under **Functions**: add the following function names:
+   `qualify_lead`, `book_appointment`, `send_sms`, `update_crm`, `transfer_to_human`, `end_call`
+6. **Save** the agent and copy the **Agent ID**
+
+Link a phone number:
+1. Go to **Phone Numbers → Import Number** (or purchase via Retell)
+2. Assign the number to your new agent
+
+Save the Agent ID to the client's company profile in the database:
 ```bash
-echo '{}' > public/board-state.json
+python3 -c "
+from memory.database import fetch_one, update
+# Find the company record
+company = fetch_one('SELECT id FROM company_profiles WHERE client_id = ?', ('your_client_id',))
+update('company_profiles', company['id'], {'retell_agent_id': 'agent_xxx', 'phone': '+61412345678'})
+print('Agent ID saved')
+"
 ```
 
 ---
 
-## Step 8: Test the setup
+## Step 5 — Set up GHL webhooks
 
-Run a quick qualification test to verify OpenAI and the database are working:
+Your server must be publicly accessible for GHL to send events.
 
+For local testing, use [ngrok](https://ngrok.com):
 ```bash
-python3 cli.py test-lead
+ngrok http 5001
+# Copy the HTTPS URL, e.g. https://abc123.ngrok.io
 ```
 
-Expected output: a qualification result with a score between 1 and 10.
+In GoHighLevel:
+1. Go to **Settings → Integrations → Webhooks → Add Webhook**
+
+Add these three webhooks:
+
+| Event | URL |
+|-------|-----|
+| Contact Created | `https://your-server.com/webhook/new-lead` |
+| Opportunity Status Changed | `https://your-server.com/webhook/stage-change` |
+| Inbound Message | `https://your-server.com/webhook/inbound-message` |
+
+2. Copy the **Signing Secret** from the Webhooks page → add to `.env` as `GHL_WEBHOOK_SECRET`
+3. Restart `main.py` after updating `.env`
 
 ---
 
-## Step 9: Start the system
+## Step 6 — Run the system
 
 ```bash
 python3 main.py
 ```
 
-This starts:
-
-- The General scheduler (runs every 6 hours, first run immediately)
-- All data collection and research jobs on their scheduled intervals
-- Four Flask servers on ports 5000–5003
-
-You should see output like:
-
+Expected startup output:
 ```
-[DB] Database initialised — swarm.db
-[MAIN] Starting Human Gate API on port 5000
+[DB] Initialising database...
+[DB] Database ready.
+[MAIN] Starting Human Gate API on port 5010
 [MAIN] Starting GHL Webhook Server on port 5001
 [MAIN] Starting Voice Webhook Server on port 5002
 [MAIN] Starting Dashboard API on port 5003
-[SCHEDULER] All jobs scheduled. Running.
+[SCHEDULER] CRM sync scheduled (every 30 min)
+[SCHEDULER] Lead check scheduled (every 60 min)
+[SCHEDULER] All jobs running.
 ```
 
----
-
-## Step 10: Verify all services are healthy
-
+Verify all four ports are healthy:
 ```bash
-curl http://localhost:5000/health
+curl http://localhost:5010/health
 curl http://localhost:5001/health
 curl http://localhost:5002/voice/health
 curl http://localhost:5003/api/health
 ```
 
-All should return `{"status": "ok", ...}`.
+All should return `{"status": "ok"}`.
 
 ---
 
-## Step 11: Set up the Swarm Board (optional)
+## Step 7 — Test with a call
+
+1. Ensure `RETELL_API_KEY` is set and your Retell agent's webhook points to `:5002`
+2. Call the linked phone number from any mobile
+3. The AI should answer within 2 rings
+4. Say: *"Hi, I own my home, my electricity bill is about $350 a month, I have a tile roof"*
+5. After the call, check the database:
+
+```bash
+python3 -c "
+from memory.database import fetch_all
+leads = fetch_all('SELECT name, score, recommended_action FROM leads ORDER BY created_at DESC LIMIT 3')
+for l in leads: print(l)
+"
+```
+
+Expected: a lead record with `score` and `recommended_action` populated.
+
+---
+
+## Step 8 — Access the swarm board
 
 ```bash
 cd swarm-board
@@ -215,129 +229,60 @@ npm install
 npm run dev
 ```
 
-Open `http://localhost:5173` in a browser. The Board tab works immediately (localStorage). The Overview tab shows live data once the Python backend is running.
+Open `http://localhost:5173` — log in with the default admin credentials (set via `/api/auth/register` on first run).
+
+The dashboard shows:
+- **Overview** — calls today, hot leads, proposals sent, CRM sync status
+- **Calls** — full call log with transcripts and scores
+- **Leads** — all qualified leads with scores and recommended actions
+- **Agents** — status of all 5 active agents
+- **Settings** — runtime config for voice, notifications, CRM sync
 
 ---
 
-## Step 12: Configure GHL Webhooks (production)
+## Step 9 — Production deployment
 
-Your server must be publicly accessible for GHL to send events. Use ngrok for development:
-
-```bash
-ngrok http 5001
-# Copy the HTTPS URL, e.g. https://abc123.ngrok.io
-```
-
-In GHL:
-
-1. Go to **Settings → Integrations → Webhooks → Add Webhook**
-2. Set URL to `https://abc123.ngrok.io/webhook/new-lead`
-3. Select event: **Contact Created**
-4. Add another webhook for **Opportunity Stage Change** → `https://abc123.ngrok.io/webhook/stage-change`
-5. Copy the Signing Secret and add to `.env` as `GHL_WEBHOOK_SECRET`
-
-For form submissions:
-- Create a GHL Funnel with a form, set webhook URL to `/webhook/form-submit`
-
-For voice call events:
-- Point **Conversation Status Changed** to `/webhook/call-complete`
-
-Restart `main.py` after updating `.env`.
-
----
-
-## Step 13: Set up Voice AI (optional)
-
-```python
-from voice.retell_client import setup_client_voice_agent
-
-result = setup_client_voice_agent(
-    client_id="sunpower_perth",
-    company_name="SunPower Perth",
-    phone_number="+61892345678",          # E.164 format
-    webhook_base_url="https://your-server.com",
-    elevenlabs_voice_id="your-voice-id",  # Optional
-)
-print(result)
-# {'success': True, 'agent_id': '...', 'phone': '...', 'phone_linked': True}
-```
-
-This creates the Retell agent, links the phone number, and saves the `agent_id` to `company_profiles`.
-
----
-
-## First Experiment Cycle
-
-After starting `main.py`, the General runs within its first 6-hour window. It will:
-
-1. Generate 3 experiment ideas using GPT-4o
-2. Score each with the 4-component confidence system
-3. Red-team each idea
-4. Route based on adjusted score:
-   - Score > 8.5 → auto-approved, budget allocated
-   - Score 5.0–8.5 → Slack alert sent, awaiting your approval
-   - Score < 5.0 → auto-killed
-
-To trigger the General immediately without waiting:
-
-```bash
-python3 cli.py run-general
-```
-
-To see pending experiments:
-
-```bash
-curl -H "Authorization: Bearer $GATE_API_KEY" http://localhost:5000/pending
-```
-
----
-
-## Running in Production
-
-For production deployment, use a process manager to keep `main.py` running:
-
-**systemd (Linux):**
+Use systemd (Linux) to keep the backend running:
 
 ```ini
+# /etc/systemd/system/solar-sales.service
 [Unit]
-Description=Solar Swarm
+Description=Solar Sales AI Admin
 After=network.target
 
 [Service]
-WorkingDirectory=/opt/solar-swarm
-ExecStart=/opt/solar-swarm/.venv/bin/python3 main.py
+WorkingDirectory=/opt/solar-sales
+ExecStart=/opt/solar-sales/.venv/bin/python3 main.py
 Restart=always
 User=ubuntu
-EnvironmentFile=/opt/solar-swarm/.env
+EnvironmentFile=/opt/solar-sales/.env
 
 [Install]
 WantedBy=multi-user.target
 ```
 
 ```bash
-sudo systemctl enable solar-swarm
-sudo systemctl start solar-swarm
+sudo systemctl enable solar-sales
+sudo systemctl start solar-sales
+sudo systemctl status solar-sales
 ```
 
-**For the swarm board in production:**
-
+Build the dashboard for production:
 ```bash
 cd swarm-board && npm run build
-# Serve the dist/ folder with nginx or any static host
+# Serve dist/ with nginx or any static host
+# Set FRONTEND_URL in .env to your production dashboard URL
 ```
-
-Set `FRONTEND_URL` in `.env` to your deployed frontend URL so the Dashboard API allows CORS from it.
 
 ---
 
-## Useful CLI Commands
+## Onboarding checklist
 
-```bash
-python3 cli.py test-lead              # Test lead qualification
-python3 cli.py run-general            # Trigger The General immediately
-python3 cli.py run-scout              # Trigger the Scout agent
-python3 cli.py status                 # Show swarm summary
-python3 cli.py pending                # List pending experiments
-python3 cli.py approve <id>           # Approve an experiment
-python3 cli.py reject <id> "reason"   # Reject an experiment
-```
+- [ ] `.env` filled in with all required keys
+- [ ] `python3 main.py` starts cleanly, all 4 ports healthy
+- [ ] GHL webhooks created and pointing to correct URLs
+- [ ] Retell agent created, phone number linked, webhook pointing to `:5002`
+- [ ] Test call completed — lead record created with score
+- [ ] Slack channel receiving HOT LEAD alerts
+- [ ] Swarm board accessible, company name showing on dashboard
+- [ ] CRM sync running — pipeline stages visible in dashboard

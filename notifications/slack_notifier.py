@@ -244,6 +244,68 @@ def post_retrospective(retro_text: str) -> bool:
     return _post(payload)
 
 
+def notify_email_draft(email_id: int, subject: str, from_email: str,
+                       classification: str, urgency: int,
+                       draft_preview: str) -> bool:
+    """Notify Slack that an email draft is awaiting human approval.
+
+    Includes approve and discard action URL buttons that link to the human gate.
+
+    Args:
+        email_id:       ID in the emails table
+        subject:        Email subject line
+        from_email:     Sender email address
+        classification: Classified intent (e.g. QUOTE_REQUEST)
+        urgency:        Urgency score 1-10
+        draft_preview:  First ~300 chars of the draft reply
+
+    Returns:
+        True if notification sent, False otherwise
+    """
+    gate_base = config.get("HUMAN_GATE_BASE_URL",
+                           f"http://localhost:{config.PORT_HUMAN_GATE}")
+    approve_url = f"{gate_base}/gate/email-approve"
+
+    urgency_emoji = "🔥" if urgency >= 7 else "📋"
+
+    blocks = [
+        _block(f"*{urgency_emoji} Email Draft Awaiting Approval*"),
+        _block(
+            f"*Email ID:* #{email_id}\n"
+            f"*From:* {_mask_email(from_email)}\n"
+            f"*Subject:* {subject[:80]}\n"
+            f"*Classification:* {classification}  |  *Urgency:* {urgency}/10"
+        ),
+        _block(f"*Draft preview:*\n_{draft_preview[:300]}_"),
+        {
+            "type": "actions",
+            "elements": [
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "✅ Send"},
+                    "style": "primary",
+                    "url": approve_url,
+                    "action_id": f"email_send_{email_id}",
+                },
+                {
+                    "type": "button",
+                    "text": {"type": "plain_text", "text": "🗑 Discard"},
+                    "style": "danger",
+                    "url": approve_url,
+                    "action_id": f"email_discard_{email_id}",
+                },
+            ],
+        },
+        _block(
+            f"_To send: `curl -X POST {approve_url} "
+            f"-d '{{\"email_id\":{email_id},\"action\":\"send\"}}'`_"
+        ),
+    ]
+
+    print(f"[SLACK] Email draft notify: email_id={email_id} urgency={urgency}")
+    return _post({"blocks": blocks})
+
+
 def post_message(text: str) -> bool:
     """Send a plain text message to Slack.
 

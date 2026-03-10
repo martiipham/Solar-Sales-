@@ -22,7 +22,6 @@ from typing import Any
 
 import config
 from memory.database import get_conn, fetch_one, update as db_update, insert
-from memory.cold_ledger import log_event
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +106,15 @@ def process_post_call(webhook_data: dict, call_ctx: dict) -> dict:
         except Exception as e:
             logger.error(f"[POST-CALL] Qualification failed: {e}")
 
+    # ── Step 4b: Flag HOT leads in DB
+    if score and score >= 7 and db_id:
+        try:
+            with get_conn() as conn:
+                conn.execute("UPDATE leads SET status = 'hot' WHERE id = ?", (db_id,))
+            print(f"[POST-CALL] HOT lead flagged: db_id={db_id} score={score}")
+        except Exception as e:
+            logger.error(f"[POST-CALL] HOT flag failed: {e}")
+
     # ── Step 5: Update GHL CRM
     ghl_id = call_ctx.get("ghl_contact_id")
     _update_ghl(ghl_id, merged, score, action, call_id, recording, extracted)
@@ -120,15 +128,6 @@ def process_post_call(webhook_data: dict, call_ctx: dict) -> dict:
 
     # ── Step 8: Slack notification
     _notify_slack(merged, score, action, duration_s, extracted)
-
-    # ── Step 9: Cold ledger
-    log_event("VOICE_CALL_COMPLETE", json.dumps({
-        "call_id":   call_id,
-        "outcome":   merged.get("call_outcome", "unknown"),
-        "score":     score,
-        "duration":  duration_s,
-        "client_id": client_id,
-    }), agent_id="voice_agent", human_involved=0)
 
     print(f"[POST-CALL] Complete: score={score} action={action} outcome={merged.get('call_outcome')}")
     return {"call_id": call_id, "score": score, "action": action, "lead_db_id": db_id}

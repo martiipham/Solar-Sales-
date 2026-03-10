@@ -245,6 +245,90 @@ FUNCTION_DEFINITIONS = [
             }
         }
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "check_availability",
+            "description": (
+                "Check if a specific date and time is available for a site assessment via Cal.com. "
+                "Call this before offering a specific time slot to the customer."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "date": {
+                        "type": "string",
+                        "description": "Date to check in YYYY-MM-DD format (e.g. 2026-03-15)"
+                    },
+                    "time": {
+                        "type": "string",
+                        "description": "Time to check in HH:MM 24-hour format (e.g. 10:00)"
+                    }
+                },
+                "required": ["date", "time"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "book_appointment",
+            "description": (
+                "Create a confirmed Cal.com booking for a solar site assessment. "
+                "Only call this after the customer has agreed to a specific date and time."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "Customer's full name"
+                    },
+                    "phone": {
+                        "type": "string",
+                        "description": "Customer's phone number in E.164 format"
+                    },
+                    "date": {
+                        "type": "string",
+                        "description": "Booking date in YYYY-MM-DD format"
+                    },
+                    "time": {
+                        "type": "string",
+                        "description": "Booking time in HH:MM 24-hour format"
+                    },
+                    "address": {
+                        "type": "string",
+                        "description": "Property address for the assessment"
+                    }
+                },
+                "required": ["name", "phone", "date", "time"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "send_sms_confirmation",
+            "description": (
+                "Send an SMS confirmation to the customer via Twilio after a booking is made. "
+                "Call this immediately after book_appointment succeeds."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "phone": {
+                        "type": "string",
+                        "description": "Customer's phone number in E.164 format"
+                    },
+                    "booking_details": {
+                        "type": "string",
+                        "description": "Booking summary to include in the SMS (date, time, address)"
+                    }
+                },
+                "required": ["phone", "booking_details"]
+            }
+        }
+    },
 ]
 
 
@@ -270,8 +354,11 @@ def execute_function(name: str, args: dict, call_ctx: dict) -> dict:
         "book_assessment":    _fn_book_assessment,
         "send_followup":      _fn_send_followup,
         "get_rebate_info":    _fn_get_rebate_info,
-        "transfer_to_human":  _fn_transfer_to_human,
-        "end_call":           _fn_end_call,
+        "transfer_to_human":    _fn_transfer_to_human,
+        "end_call":             _fn_end_call,
+        "check_availability":   _fn_check_availability,
+        "book_appointment":     _fn_book_appointment,
+        "send_sms_confirmation": _fn_send_sms_confirmation,
     }
 
     fn = dispatch.get(name)
@@ -544,7 +631,7 @@ def _fn_get_rebate_info(args: dict, ctx: dict) -> dict:
     """Return rebate information for the customer's state."""
     from knowledge.company_kb import get_rebate_for_state
 
-    state      = args.get("state", ctx.get("lead_data", {}).get("state", "WA")).upper()
+    state      = (args.get("state") or ctx.get("lead_data", {}).get("state") or "WA").upper()
     system_kw  = float(args.get("system_size_kw", 6.6))
 
     summary = get_rebate_for_state(state, system_kw)
@@ -615,3 +702,185 @@ def _fn_end_call(args: dict, ctx: dict) -> dict:
         "farewell": farewells.get(outcome, "Thank you for calling. Have a wonderful day!"),
         "outcome": outcome,
     }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CAL.COM + TWILIO FUNCTIONS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _fn_check_availability(args: dict, ctx: dict) -> dict:
+    """Check Cal.com slot availability for a given date and time.
+
+    Args:
+        args: date (YYYY-MM-DD), time (HH:MM)
+        ctx: Call context
+
+    Returns:
+        Dict with available bool and message for the agent
+    """
+    import os
+    import requests as _requests
+
+    api_key      = os.getenv("CALCOM_API_KEY", "")
+    event_type   = os.getenv("CALCOM_EVENT_TYPE_ID", "")
+
+    if not api_key or not event_type:
+        return {"available": True, "message": "Availability check unavailable — assume slot is open."}
+
+    date = args.get("date", "")
+    time = args.get("time", "09:00")
+
+    try:
+        start = f"{date}T{time}:00Z"
+        # Check one hour window
+        end_h = str(int(time.split(":")[0]) + 1).zfill(2)
+        end   = f"{date}T{end_h}:{time.split(':')[1]}:00Z"
+
+        resp = _requests.get(
+            "https://api.cal.com/v1/slots/available",
+            params={
+                "apiKey":      api_key,
+                "eventTypeId": event_type,
+                "startTime":   start,
+                "endTime":     end,
+            },
+            timeout=10,
+        )
+        if resp.status_code == 200:
+            slots = resp.json().get("slots", {})
+            available = bool(slots.get(date))
+            return {
+                "available": available,
+                "date":      date,
+                "time":      time,
+                "message":   f"{'Available' if available else 'Not available'} on {date} at {time}.",
+            }
+        logger.error(f"[VOICE FN] Cal.com availability check failed: {resp.status_code}")
+        return {"available": True, "message": "Could not verify — offer the slot and confirm with team."}
+    except Exception as e:
+        logger.error(f"[VOICE FN] check_availability error: {e}")
+        return {"available": True, "message": "Could not verify — offer the slot and confirm with team."}
+
+
+def _fn_book_appointment(args: dict, ctx: dict) -> dict:
+    """Create a Cal.com booking for a solar site assessment.
+
+    Args:
+        args: name, phone, date (YYYY-MM-DD), time (HH:MM), address (optional)
+        ctx: Call context
+
+    Returns:
+        Dict with booking confirmation details
+    """
+    import os
+    import requests as _requests
+
+    api_key    = os.getenv("CALCOM_API_KEY", "")
+    event_type = os.getenv("CALCOM_EVENT_TYPE_ID", "")
+
+    name    = args.get("name", ctx.get("contact_name", "Solar Lead"))
+    phone   = args.get("phone", ctx.get("contact_phone", ""))
+    date    = args.get("date", "")
+    time    = args.get("time", "09:00")
+    address = args.get("address", ctx.get("lead_data", {}).get("suburb", ""))
+
+    ctx["call_outcome"] = "booked_assessment"
+
+    if not api_key or not event_type:
+        logger.warning("[VOICE FN] Cal.com not configured — logging booking locally only")
+        return {
+            "booked":       False,
+            "confirmation": f"Noted {name} for {date} at {time}. Team will confirm via SMS.",
+            "note":         "Cal.com not configured — manual booking required.",
+        }
+
+    try:
+        start_iso = f"{date}T{time}:00Z"
+        payload = {
+            "eventTypeId": int(event_type),
+            "start":       start_iso,
+            "responses": {
+                "name":  name,
+                "email": ctx.get("lead_data", {}).get("email", f"{phone}@placeholder.com"),
+                "phone": phone,
+            },
+            "timeZone": "Australia/Perth",
+            "language": "en",
+            "metadata": {"address": address, "source": "voice-ai"},
+        }
+        resp = _requests.post(
+            "https://api.cal.com/v1/bookings",
+            params={"apiKey": api_key},
+            json=payload,
+            timeout=15,
+        )
+        if resp.status_code in (200, 201):
+            booking = resp.json()
+            booking_id = booking.get("id", "unknown")
+            print(f"[VOICE FN] Cal.com booking created: {booking_id} for {name} on {date} {time}")
+            return {
+                "booked":      True,
+                "booking_id":  booking_id,
+                "date":        date,
+                "time":        time,
+                "name":        name,
+                "confirmation": f"Confirmed! Assessment booked for {name} on {date} at {time}. Confirmation SMS on its way.",
+            }
+        logger.error(f"[VOICE FN] Cal.com booking failed: {resp.status_code} {resp.text[:200]}")
+        return {
+            "booked":       False,
+            "confirmation": f"We'll lock in {date} at {time} for you — team will confirm by SMS shortly.",
+        }
+    except Exception as e:
+        logger.error(f"[VOICE FN] book_appointment error: {e}")
+        return {"booked": False, "confirmation": "Booking noted — team will confirm by SMS."}
+
+
+def _fn_send_sms_confirmation(args: dict, ctx: dict) -> dict:
+    """Send a booking confirmation SMS via Twilio.
+
+    Args:
+        args: phone, booking_details
+        ctx: Call context
+
+    Returns:
+        Dict with sent status
+    """
+    import os
+    import requests as _requests
+    from requests.auth import HTTPBasicAuth
+
+    account_sid = os.getenv("TWILIO_ACCOUNT_SID", "")
+    auth_token  = os.getenv("TWILIO_AUTH_TOKEN", "")
+    from_number = os.getenv("TWILIO_FROM_NUMBER", "")
+
+    phone           = args.get("phone", ctx.get("contact_phone", ""))
+    booking_details = args.get("booking_details", "")
+    name            = (ctx.get("contact_name") or "").split()[0] or "there"
+
+    message = (
+        f"Hi {name}! Your free solar assessment with {ctx.get('company_name', 'our team')} "
+        f"is confirmed. {booking_details} "
+        f"Reply STOP to opt out."
+    )
+
+    if not account_sid or not auth_token or not from_number:
+        logger.warning("[VOICE FN] Twilio not configured — SMS not sent")
+        return {"sent": False, "reason": "Twilio not configured"}
+
+    try:
+        resp = _requests.post(
+            f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Messages.json",
+            data={"From": from_number, "To": phone, "Body": message},
+            auth=HTTPBasicAuth(account_sid, auth_token),
+            timeout=10,
+        )
+        if resp.status_code in (200, 201):
+            sid = resp.json().get("sid", "")
+            print(f"[VOICE FN] SMS sent to {phone}: {sid}")
+            return {"sent": True, "sid": sid, "preview": message[:80]}
+        logger.error(f"[VOICE FN] Twilio SMS failed: {resp.status_code} {resp.text[:200]}")
+        return {"sent": False, "reason": f"Twilio error {resp.status_code}"}
+    except Exception as e:
+        logger.error(f"[VOICE FN] send_sms_confirmation error: {e}")
+        return {"sent": False, "reason": str(e)}

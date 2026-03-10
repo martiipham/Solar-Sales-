@@ -54,9 +54,31 @@ _storage_uri = config.REDIS_URL if config.REDIS_URL else "memory://"
 _limiter = Limiter(
     app=gate_app,
     key_func=get_remote_address,
-    default_limits=[],
+    default_limits=["20 per minute"],   # Applied to every endpoint unless overridden
     storage_uri=_storage_uri,
 )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# JSON HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _parse_json() -> tuple:
+    """Parse JSON from the request body with explicit error handling.
+
+    Returns:
+        (data_dict, None) on success.
+        (None, error_response_tuple) when body is missing or malformed JSON.
+    """
+    try:
+        data = request.get_json(force=True, silent=False)
+        if data is None:
+            return {}, None          # empty but valid (no body sent)
+        if not isinstance(data, dict):
+            return None, (jsonify({"error": "JSON object expected"}), 400)
+        return data, None
+    except Exception:
+        return None, (jsonify({"error": "Malformed JSON"}), 400)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -366,6 +388,94 @@ def approve_breaker_reset():
     except Exception as e:
         logger.error(f"[HUMAN GATE] Breaker reset error: {e}")
         return jsonify({"error": "Internal server error"}), 500
+
+
+@gate_app.route("/gate/email-approve", methods=["POST"])
+@_limiter.limit("30 per minute")
+@_require_api_key
+def email_approve():
+    """Approve, edit, or discard a pending email draft.
+
+    Request body:
+        email_id:    int   — id in the emails table
+        action:      str   — "send" | "edit" | "discard"
+        edited_body: str   — required when action is "edit"
+
+    Response:
+        JSON with status and email_id
+    """
+    try:
+        data, err = _parse_json()
+        if err:
+            return err
+
+        try:
+            email_id = int(data.get("email_id", 0))
+        except (TypeError, ValueError):
+            return jsonify({"error": "email_id must be an integer"}), 400
+
+        action      = str(data.get("action", "")).strip()
+        edited_body = str(data.get("edited_body", "")).strip()
+
+        if not email_id or action not in ("send", "edit", "discard"):
+            return jsonify({"error": "email_id and action (send|edit|discard) required"}), 400
+
+        from memory.database import fetch_one, update
+        row = fetch_one("SELECT * FROM emails WHERE id = ?", (email_id,))
+        if not row:
+            return jsonify({"error": f"Email #{email_id} not found"}), 404
+        if row.get("status") != "pending":
+            return jsonify({"error": f"Email #{email_id} is not pending (status={row.get('status')})"}), 400
+
+        if action == "discard":
+            update("emails", email_id, {"status": "discarded"})
+            print(f"[HUMAN GATE] Email #{email_id} discarded")
+            return jsonify({"status": "discarded", "email_id": email_id}), 200
+
+        # "send" or "edit"
+        body_to_send = edited_body if action == "edit" and edited_body else row.get("draft_reply", "")
+        if not body_to_send:
+            return jsonify({"error": "No body to send"}), 400
+
+        if action == "edit":
+            update("emails", email_id, {"draft_reply": body_to_send})
+
+        result = _send_email_draft(row, body_to_send)
+        if result:
+            update("emails", email_id, {"status": "sent"})
+            print(f"[HUMAN GATE] Email #{email_id} sent via human gate")
+            return jsonify({"status": "sent", "email_id": email_id}), 200
+        else:
+            return jsonify({"error": "Send failed — check logs"}), 500
+
+    except Exception as e:
+        logger.error(f"[HUMAN GATE] Email approve error: {e}")
+        return jsonify({"error": "Internal server error"}), 500
+
+
+def _send_email_draft(row: dict, body: str) -> bool:
+    """Send a draft email reply via GHL.
+
+    Args:
+        row:  Row dict from the emails table
+        body: Email body to send
+
+    Returns:
+        True on success, False on failure
+    """
+    try:
+        from email_processing.email_sender import send_via_ghl
+        subject = f"Re: {row.get('subject', '')}"
+        result  = send_via_ghl(
+            to_email    = row.get("from_email", ""),
+            subject     = subject,
+            body        = body,
+            location_id = None,
+        )
+        return result is not None
+    except Exception as e:
+        logger.error(f"[HUMAN GATE] _send_email_draft failed: {e}")
+        return False
 
 
 @gate_app.route("/slack/actions", methods=["POST"])

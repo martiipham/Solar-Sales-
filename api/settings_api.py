@@ -49,6 +49,13 @@ DEFAULTS = [
     # Notifications
     ("notify.slack_enabled",       "true",  "notify",    "Send Slack alerts for approvals/failures"),
     ("notify.email_enabled",       "false", "notify",    "Send email digests (requires SMTP config)"),
+    # Email processing
+    ("email.agent_enabled",        "true",  "email",     "Master on/off switch for inbound email processing"),
+    ("email.auto_send_enabled",    "false", "email",     "Auto-send AI replies without human approval"),
+    ("email.auto_send_threshold",  "9",     "email",     "Urgency score (1-10) required to trigger auto-send (only when auto-send is on)"),
+    ("email.auto_discard_spam",    "true",  "email",     "Automatically discard emails classified as SPAM without showing in queue"),
+    ("email.imap_poll_interval",   "120",   "email",     "Seconds between IMAP inbox checks. Set to 0 to disable polling"),
+    ("email.reply_prompt",         "",      "email",     "Custom AI instructions for drafting replies — tone, sign-off, what to mention"),
 ]
 
 

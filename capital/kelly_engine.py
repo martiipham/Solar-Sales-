@@ -39,5 +39,6 @@ def calculate_budget(confidence_score: float, weekly_budget: float = None) -> di
         "confidence_score": confidence_score,
         "kelly_fraction": round(fractional, 4),
         "recommended_aud": recommended,
+        "budget_aud": recommended,          # alias — used by cli.py
         "weekly_budget_aud": weekly_budget,
     }

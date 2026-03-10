@@ -85,7 +85,7 @@ def reset_breaker(approved_by: str = "system") -> dict:
         approved_by: Who approved the reset
 
     Returns:
-        Dict with new state
+        Dict with success, message, and new level
     """
     _state["level"] = "green"
     _state["consecutive_failures"] = 0
@@ -97,13 +97,17 @@ def reset_breaker(approved_by: str = "system") -> dict:
     }
     _state["history"].append(event)
     logger.info(f"[CIRCUIT BREAKER] Reset by {approved_by}")
-    return {"level": "green", "consecutive_failures": 0}
+    return {"success": True, "message": f"Circuit breaker reset to GREEN by {approved_by}", "level": "green"}
 
 
 def get_circuit_breaker_state() -> dict:
     """Return full circuit breaker state dict.
 
+    Includes an 'active' key: True when breaker is not green.
+
     Returns:
-        State dict with level, consecutive_failures, history
+        State dict with level, consecutive_failures, history, active
     """
-    return dict(_state)
+    state = dict(_state)
+    state["active"] = state.get("level", "green") != "green"
+    return state

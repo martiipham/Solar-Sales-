@@ -24,22 +24,25 @@ import OnboardingPage from "./pages/OnboardingPage";
 import DocsPage from "./pages/DocsPage";
 import LeadsPage from "./pages/LeadsPage";
 import AgentsPage from "./pages/AgentsPage";
+import EmailsPage from "./pages/EmailsPage";
 
 // Pages that require a minimum role
 const ROLE_RANK = { client: 0, admin: 1, owner: 2 };
 const PAGE_MIN_ROLE = {
-  overview:        "client",
-  calls:           "client",
+  overview:         "client",
+  calls:            "client",
   "knowledge-base": "client",
-  onboarding:      "client",
-  board:           "admin",
-  leads:           "admin",
-  agents:          "admin",
-  docs:            "admin",
-  settings:        "admin",
-  companies:       "admin",
-  users:           "owner",
-  apikeys:         "owner",
+  "client-view":    "admin",
+  onboarding:       "admin",
+  board:            "admin",
+  leads:            "admin",
+  emails:           "admin",
+  agents:           "admin",
+  docs:             "admin",
+  settings:         "admin",
+  companies:        "admin",
+  users:            "owner",
+  apikeys:          "owner",
 };
 
 function canAccess(userRole, page) {
@@ -136,8 +139,12 @@ export default function AppShell() {
         return <LeadsPage />;
       case "agents":
         return <AgentsPage />;
+      case "emails":
+        return <EmailsPage />;
       case "docs":
         return <DocsPage />;
+      case "client-view":
+        return <ClientDashboard />;
       default:
         return role === "client"
           ? <ClientDashboard onNavigate={navigate} />

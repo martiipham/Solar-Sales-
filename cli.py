@@ -54,12 +54,15 @@ def cmd_swarm_status():
     print(f"  Budget Remaining:   ${summary.get('budget_remaining_aud', 0):.2f} AUD")
     print(f"  Consecutive Fails:  {summary.get('consecutive_failures', 0)}")
 
-    from capital.portfolio_manager import get_portfolio_summary
-    portfolio = get_portfolio_summary()
-    remaining = portfolio.get("remaining", {})
-    print("\n  BUDGET BY BUCKET:")
-    for bucket in ["exploit", "explore", "moonshot"]:
-        print(f"    {bucket.capitalize():<12} ${remaining.get(bucket, 0):.2f} remaining")
+    try:
+        from capital.portfolio_manager import get_portfolio_summary
+        portfolio = get_portfolio_summary()
+        remaining = portfolio.get("remaining", {})
+        print("\n  BUDGET BY BUCKET:")
+        for bucket in ["exploit", "explore", "moonshot"]:
+            print(f"    {bucket.capitalize():<12} ${remaining.get(bucket, 0):.2f} remaining")
+    except ImportError:
+        print("\n  [capital.portfolio_manager not yet implemented — bucket breakdown unavailable]")
 
     pending = get_pending_experiments()
     if pending:
@@ -115,8 +118,12 @@ def cmd_approve(experiment_id: int):
     print(f"  Confidence: {exp.get('confidence_score', 0):.1f}/10 | Devil: {exp.get('devil_score', 0):.1f}/10")
     print(f"  Bucket: {exp.get('bucket')} | Kelly: {exp.get('kelly_fraction', 0):.3f}")
 
-    from capital.kelly_engine import calculate_budget
-    budget = calculate_budget(exp.get("confidence_score", 5))["budget_aud"]
+    budget = 0.0
+    try:
+        from capital.kelly_engine import calculate_budget
+        budget = calculate_budget(exp.get("confidence_score", 5))["budget_aud"]
+    except ImportError:
+        print("  [capital.kelly_engine not yet implemented — using $0 budget placeholder]")
     print(f"\n  Approving with ${budget:.2f} AUD budget...")
 
     update("experiments", experiment_id, {
@@ -126,8 +133,11 @@ def cmd_approve(experiment_id: int):
         "approved_at": datetime.utcnow().isoformat(),
     })
 
-    from memory.cold_ledger import log_experiment_approved
-    log_experiment_approved(experiment_id, "cli", budget)
+    try:
+        from memory.cold_ledger import log_experiment_approved
+        log_experiment_approved(experiment_id, "cli", budget)
+    except ImportError:
+        pass
     print(f"  ✅ Experiment #{experiment_id} approved.")
 
 
@@ -148,17 +158,23 @@ def cmd_reject(experiment_id: int):
         "failure_mode": reason,
         "completed_at": datetime.utcnow().isoformat(),
     })
-    from memory.cold_ledger import log_experiment_killed
-    log_experiment_killed(experiment_id, reason, "cli")
+    try:
+        from memory.cold_ledger import log_experiment_killed
+        log_experiment_killed(experiment_id, reason, "cli")
+    except ImportError:
+        pass
     print(f"  ❌ Experiment #{experiment_id} rejected.")
 
 
 def cmd_run_general():
     """Manually trigger the General's strategic planning cycle."""
     print("\n  Triggering The General...")
-    from agents.master_agent import run
-    results = run()
-    print(f"\n  General cycle complete. {len(results)} ideas processed.")
+    try:
+        from agents.master_agent import run
+        results = run()
+        print(f"\n  General cycle complete. {len(results)} ideas processed.")
+    except ImportError:
+        print("\n  [agents.master_agent not yet implemented]")
 
 
 def cmd_retrospective():
@@ -274,8 +290,26 @@ def cmd_stats():
     print("  SOLAR SWARM — PIPELINE STATISTICS")
     print("=" * 55)
 
-    from agents.analytics_agent import get_conversion_stats
-    stats = get_conversion_stats()
+    try:
+        from agents.analytics_agent import get_conversion_stats
+        stats = get_conversion_stats()
+    except ImportError:
+        # Compute basic stats directly from the DB as fallback
+        total  = fetch_one("SELECT COUNT(*) as n FROM leads")
+        hot    = fetch_one("SELECT COUNT(*) as n FROM leads WHERE qualification_score >= 7")
+        conv   = fetch_one("SELECT COUNT(*) as n FROM leads WHERE status = 'converted'")
+        avg    = fetch_one("SELECT AVG(qualification_score) as a FROM leads WHERE qualification_score IS NOT NULL")
+        total_n = total.get("n", 0) if total else 0
+        conv_n  = conv.get("n", 0) if conv else 0
+        stats = {
+            "total_leads":             total_n,
+            "call_now":                hot.get("n", 0) if hot else 0,
+            "nurture":                 0,
+            "disqualify":              0,
+            "converted":               conv_n,
+            "conversion_rate_pct":     round(conv_n / total_n * 100, 1) if total_n else 0,
+            "avg_qualification_score": round(avg.get("a", 0) or 0, 1) if avg else 0,
+        }
 
     if stats.get("total_leads", 0) == 0:
         print("\n  No leads in database yet.")
@@ -301,7 +335,11 @@ def cmd_stats():
 
 def cmd_reset_breaker():
     """Reset the circuit breaker (Red level requires confirmation)."""
-    from capital.circuit_breaker import get_circuit_breaker_state, reset_breaker
+    try:
+        from capital.circuit_breaker import get_circuit_breaker_state, reset_breaker
+    except ImportError:
+        print("\n  [capital.circuit_breaker not yet implemented]")
+        return
     state = get_circuit_breaker_state()
 
     if not state.get("active"):
@@ -329,22 +367,28 @@ def cmd_reset_breaker():
 def cmd_scout():
     """Run the scout agent now to find new solar company prospects."""
     print("\n  Running scout agent...")
-    from agents.scout_agent import run
-    result = run()
-    print(f"\n  Prospects found:       {result['prospects_found']}")
-    print(f"  Queued for research:   {result['queued_for_research']}")
-    print(f"  Opportunities saved:   {result['opportunities_saved']}")
+    try:
+        from agents.scout_agent import run
+        result = run()
+        print(f"\n  Prospects found:       {result['prospects_found']}")
+        print(f"  Queued for research:   {result['queued_for_research']}")
+        print(f"  Opportunities saved:   {result['opportunities_saved']}")
+    except ImportError:
+        print("\n  [agents.scout_agent not yet implemented]")
 
 
 def cmd_research(query: str):
     """Queue a manual research task and run the engine immediately."""
     print(f"\n  Queuing research: {query}")
-    from research.orchestrator import queue_research, run
-    research_id = queue_research("market", query, requested_by="cli", priority="HIGH")
-    print(f"  Research queued: {research_id}")
-    print("  Running research engine...")
-    result = run(max_tasks=1)
-    print(f"  Done — completed={result.get('completed', 0)} opportunities={result.get('opportunities_found', 0)}")
+    try:
+        from research.orchestrator import queue_research, run
+        research_id = queue_research("market", query, requested_by="cli", priority="HIGH")
+        print(f"  Research queued: {research_id}")
+        print("  Running research engine...")
+        result = run(max_tasks=1)
+        print(f"  Done — completed={result.get('completed', 0)} opportunities={result.get('opportunities_found', 0)}")
+    except ImportError:
+        print("\n  [research.orchestrator not yet implemented]")
 
 
 def cmd_opportunities(limit: int = 10):
@@ -352,37 +396,43 @@ def cmd_opportunities(limit: int = 10):
     print("\n" + "=" * 55)
     print("  TOP OPPORTUNITIES")
     print("=" * 55)
-    from storage.opportunity_store import get_top, get_summary
-    summary = get_summary()
-    by_status = summary.get("by_status", {})
-    print(f"\n  Total: {sum(by_status.values())} | "
-          f"Discovered: {by_status.get('discovered', 0)} | "
-          f"Actioned: {by_status.get('actioned', 0)} | "
-          f"Won: {by_status.get('won', 0)}")
-    opps = get_top(limit=limit)
-    if not opps:
-        print("\n  No opportunities yet. Run: python cli.py scout")
-        return
-    print(f"\n  {'Score':<7} {'Type':<12} {'Effort':<8} {'Impact':<8} Title")
-    print("  " + "-" * 60)
-    for o in opps:
-        print(f"  {o['priority_score']:<7.2f} {o['opp_type']:<12} {o['effort']:<8} {o['impact']:<8} {o['title'][:35]}")
-    print()
+    try:
+        from storage.opportunity_store import get_top, get_summary
+        summary = get_summary()
+        by_status = summary.get("by_status", {})
+        print(f"\n  Total: {sum(by_status.values())} | "
+              f"Discovered: {by_status.get('discovered', 0)} | "
+              f"Actioned: {by_status.get('actioned', 0)} | "
+              f"Won: {by_status.get('won', 0)}")
+        opps = get_top(limit=limit)
+        if not opps:
+            print("\n  No opportunities yet. Run: python cli.py scout")
+            return
+        print(f"\n  {'Score':<7} {'Type':<12} {'Effort':<8} {'Impact':<8} Title")
+        print("  " + "-" * 60)
+        for o in opps:
+            print(f"  {o['priority_score']:<7.2f} {o['opp_type']:<12} {o['effort']:<8} {o['impact']:<8} {o['title'][:35]}")
+        print()
+    except ImportError:
+        print("\n  [storage.opportunity_store not yet implemented]")
 
 
 def cmd_collect():
     """Run data collection cycle now."""
     print("\n  Running data collection cycle...")
-    from data_collection.orchestrator import run
-    result = run()
-    print(f"\n  Sources run:   {result['sources_run']}")
-    print(f"  Records:       {result['collected']}")
-    print(f"  New signals:   {result['new_signals']}")
-    print(f"  Failed:        {result['failed']}")
-    print("\n  Running pipeline processor...")
-    from data_collection.pipeline.processor import process_batch
-    pr = process_batch(since_minutes=30)
-    print(f"  Processed: {pr['processed']} | Deduped: {pr['deduplicated']} | Signals posted: {pr['signals_posted']}")
+    try:
+        from data_collection.orchestrator import run
+        result = run()
+        print(f"\n  Sources run:   {result['sources_run']}")
+        print(f"  Records:       {result['collected']}")
+        print(f"  New signals:   {result['new_signals']}")
+        print(f"  Failed:        {result['failed']}")
+        print("\n  Running pipeline processor...")
+        from data_collection.pipeline.processor import process_batch
+        pr = process_batch(since_minutes=30)
+        print(f"  Processed: {pr['processed']} | Deduped: {pr['deduplicated']} | Signals posted: {pr['signals_posted']}")
+    except ImportError:
+        print("\n  [data_collection not yet implemented]")
 
 
 def cmd_bus_status():
@@ -390,17 +440,20 @@ def cmd_bus_status():
     print("\n" + "=" * 55)
     print("  MESSAGE BUS STATUS")
     print("=" * 55)
-    from bus.message_bus import get_bus_summary
-    summary = get_bus_summary()
-    if not summary:
-        print("\n  No messages on bus yet.")
-        return
-    print(f"\n  {'Queue':<25} {'Queued':<8} {'Processing':<12} {'Complete':<10} {'Failed'}")
-    print("  " + "-" * 60)
-    for queue, counts in sorted(summary.items()):
-        print(f"  {queue:<25} {counts.get('queued', 0):<8} {counts.get('processing', 0):<12} "
-              f"{counts.get('complete', 0):<10} {counts.get('failed', 0)}")
-    print()
+    try:
+        from bus.message_bus import get_bus_summary
+        summary = get_bus_summary()
+        if not summary:
+            print("\n  No messages on bus yet.")
+            return
+        print(f"\n  {'Queue':<25} {'Queued':<8} {'Processing':<12} {'Complete':<10} {'Failed'}")
+        print("  " + "-" * 60)
+        for queue, counts in sorted(summary.items()):
+            print(f"  {queue:<25} {counts.get('queued', 0):<8} {counts.get('processing', 0):<12} "
+                  f"{counts.get('complete', 0):<10} {counts.get('failed', 0)}")
+        print()
+    except ImportError:
+        print("\n  [bus.message_bus not yet implemented]")
 
 
 def cmd_kg_summary():
@@ -408,15 +461,18 @@ def cmd_kg_summary():
     print("\n" + "=" * 55)
     print("  KNOWLEDGE GRAPH SUMMARY")
     print("=" * 55)
-    from storage.knowledge_graph import get_graph_summary
-    summary = get_graph_summary()
-    print("\n  ENTITIES:")
-    for etype, count in summary.get("entities", {}).items():
-        print(f"    {etype:<15} {count}")
-    print("\n  RELATIONSHIPS:")
-    for rtype, count in summary.get("relationships", {}).items():
-        print(f"    {rtype:<20} {count}")
-    print()
+    try:
+        from storage.knowledge_graph import get_graph_summary
+        summary = get_graph_summary()
+        print("\n  ENTITIES:")
+        for etype, count in summary.get("entities", {}).items():
+            print(f"    {etype:<15} {count}")
+        print("\n  RELATIONSHIPS:")
+        for rtype, count in summary.get("relationships", {}).items():
+            print(f"    {rtype:<20} {count}")
+        print()
+    except ImportError:
+        print("\n  [storage.knowledge_graph not yet implemented]")
 
 
 def cmd_ab_tests():
@@ -424,9 +480,12 @@ def cmd_ab_tests():
     print("\n" + "=" * 55)
     print("  A/B TEST SUMMARY")
     print("=" * 55)
-    from agents.ab_tester import get_summary
-    from memory.database import fetch_all
-    summary = get_summary()
+    try:
+        from agents.ab_tester import get_summary
+        summary = get_summary()
+    except ImportError:
+        summary = {}
+        print("  [agents.ab_tester not yet implemented — showing DB rows only]")
     print(f"\n  Running:   {summary.get('running', 0)}")
     print(f"  Complete:  {summary.get('complete', 0)}")
     rows = fetch_all(
@@ -548,11 +607,14 @@ def cmd_configure():
 def cmd_mutate():
     """Run the mutation engine now to evolve underperforming strategies."""
     print("\n  Running mutation engine...")
-    from agents.mutation_engine import run
-    result = run()
-    print(f"\n  Analysed:          {result['analysed']}")
-    print(f"  Mutations created: {result['mutations_created']}")
-    print(f"  Killed:            {result['killed']}")
+    try:
+        from agents.mutation_engine import run
+        result = run()
+        print(f"\n  Analysed:          {result['analysed']}")
+        print(f"  Mutations created: {result['mutations_created']}")
+        print(f"  Killed:            {result['killed']}")
+    except ImportError:
+        print("\n  [agents.mutation_engine not yet implemented]")
 
 
 def main():

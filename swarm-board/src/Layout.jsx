@@ -6,12 +6,17 @@
  *   admin  → sees everything except Users & API Keys
  *   client → sees only their Client Dashboard
  *
+ * Nav sections:
+ *   OPERATIONS: Leads, Calls, Emails
+ *   SETUP:      Company, Knowledge Base, Settings
+ *   ADMIN:      API Keys, Users, Onboarding, Docs
+ *
  * Props:
  *   currentPage  — active page key (string)
  *   onNavigate   — (pageKey) => void
  *   children     — page content
  */
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useAuth } from "./AuthContext";
 
 const C = {
@@ -32,34 +37,31 @@ const C = {
 };
 const h = (col, a) => col + Math.round(a * 255).toString(16).padStart(2, "0");
 
-// Nav items — icon, label, page key, min role
+// Item types: "link" | "separator" | "section"
 const NAV_ITEMS = [
-  { icon: "◈",  label: "Overview",       page: "overview",      minRole: "client" },
-  { icon: "📞", label: "Calls",          page: "calls",         minRole: "client" },
-  { icon: "📚", label: "Knowledge Base", page: "knowledge-base", minRole: "client" },
-  { icon: "—",  label: null,             page: null,            minRole: "client" }, // separator
-  { icon: "◫",  label: "Board",          page: "board",         minRole: "admin"  },
-  { icon: "◎",  label: "Leads",          page: "leads",         minRole: "admin"  },
-  { icon: "🤖", label: "Agents",         page: "agents",        minRole: "admin"  },
-  { icon: "—",  label: null,             page: null,            minRole: "admin"  }, // separator
-  { icon: "🚀", label: "Onboarding",    page: "onboarding",    minRole: "client" },
-  { icon: "📄", label: "Docs",           page: "docs",          minRole: "admin"  },
-  { icon: "⚙",  label: "Settings",      page: "settings",      minRole: "admin"  },
-  { icon: "🏢", label: "Companies",      page: "companies",     minRole: "admin"  },
-  { icon: "👥", label: "Users",          page: "users",         minRole: "owner"  },
-  { icon: "🔑", label: "API Keys",       page: "apikeys",       minRole: "owner"  },
+  { type: "link",      icon: "◈",  label: "Dashboard",      page: "overview",       minRole: "client" },
+  { type: "section",   label: "OPERATIONS",                                          minRole: "admin"  },
+  { type: "link",      icon: "◎",  label: "Leads",           page: "leads",          minRole: "admin"  },
+  { type: "link",      icon: "📞", label: "Calls",           page: "calls",          minRole: "client" },
+  { type: "link",      icon: "✉️", label: "Emails",          page: "emails",         minRole: "admin"  },
+  { type: "section",   label: "SETUP",                                               minRole: "admin"  },
+  { type: "link",      icon: "🏢", label: "Company",         page: "companies",      minRole: "admin"  },
+  { type: "link",      icon: "📚", label: "Knowledge Base",  page: "knowledge-base", minRole: "client" },
+  { type: "link",      icon: "⚙",  label: "Settings",        page: "settings",       minRole: "admin"  },
+  { type: "section",   label: "ADMIN",                                               minRole: "owner"  },
+  { type: "link",      icon: "🔑", label: "API Keys",        page: "apikeys",        minRole: "owner"  },
+  { type: "link",      icon: "👥", label: "Users",           page: "users",          minRole: "owner"  },
+  { type: "link",      icon: "👁", label: "Client Preview",  page: "client-view",    minRole: "admin"  },
+  { type: "link",      icon: "🚀", label: "Onboarding",      page: "onboarding",     minRole: "admin"  },
+  { type: "link",      icon: "📄", label: "Docs",            page: "docs",           minRole: "admin"  },
 ];
 
 const ROLE_RANK = { client: 0, admin: 1, owner: 2 };
 const canSee = (userRole, minRole) =>
   (ROLE_RANK[userRole] ?? 0) >= (ROLE_RANK[minRole] ?? 0);
 
-function NavItem({ item, active, onClick }) {
+function NavItem({ item, active, onClick, badge }) {
   const [hovered, setHovered] = useState(false);
-  if (!item.label) {
-    return <div style={{ height: 1, background: C.border, margin: "8px 12px" }} />;
-  }
-  const highlight = active || hovered;
   return (
     <button
       onClick={() => onClick(item.page)}
@@ -80,24 +82,61 @@ function NavItem({ item, active, onClick }) {
         {item.icon}
       </span>
       <span>{item.label}</span>
-      {active && (
+      {badge ? (
+        <span style={{
+          marginLeft: "auto", minWidth: 18, height: 18,
+          background: C.amber, borderRadius: 9,
+          fontSize: 10, fontFamily: "'Syne Mono', monospace",
+          color: "#050810", display: "flex", alignItems: "center",
+          justifyContent: "center", padding: "0 5px",
+          boxShadow: `0 0 8px ${h(C.amber, 0.5)}`,
+        }}>
+          {badge > 99 ? "99+" : badge}
+        </span>
+      ) : active ? (
         <span style={{
           marginLeft: "auto", width: 5, height: 5, borderRadius: "50%",
           background: C.amber, boxShadow: `0 0 6px ${C.amber}`,
         }} />
-      )}
+      ) : null}
     </button>
   );
 }
 
+function SectionLabel({ label }) {
+  return (
+    <div style={{
+      padding: "14px 14px 4px",
+      fontSize: 9,
+      fontFamily: "'Syne Mono', monospace",
+      letterSpacing: 2,
+      color: C.muted,
+    }}>
+      {label}
+    </div>
+  );
+}
+
 export default function Layout({ currentPage, onNavigate, children }) {
-  const { user, logout } = useAuth();
-  const [collapsed, setCollapsed] = useState(false);
+  const { user, logout, apiFetch } = useAuth();
+  const [collapsed, setCollapsed]   = useState(false);
+  const [emailBadge, setEmailBadge] = useState(0);
+
+  useEffect(() => {
+    if (!user || (user.role === "client")) return;
+    const fetchBadge = () => {
+      apiFetch("/api/emails/stats")
+        .then(r => r.json())
+        .then(d => setEmailBadge(d.pending || 0))
+        .catch(() => {});
+    };
+    fetchBadge();
+    const timer = setInterval(fetchBadge, 60000); // refresh every 60s
+    return () => clearInterval(timer);
+  }, [user]); // eslint-disable-line
 
   const role = user?.role || "client";
-  const visibleNav = NAV_ITEMS.filter(item =>
-    item.label === null || canSee(role, item.minRole)
-  );
+  const visibleNav = NAV_ITEMS.filter(item => canSee(role, item.minRole || "client"));
 
   const roleColors = { owner: C.amber, admin: C.cyan, client: C.green };
   const roleColor = roleColors[role] || C.muted;
@@ -128,10 +167,10 @@ export default function Layout({ currentPage, onNavigate, children }) {
               <span style={{ fontSize: 20, flexShrink: 0 }}>☀️</span>
               <div style={{ minWidth: 0 }}>
                 <div className="mono" style={{ fontSize: 12, color: C.amber, letterSpacing: 2, whiteSpace: "nowrap" }}>
-                  SOLAR SWARM
+                  SOLAR ADMIN
                 </div>
                 <div style={{ fontSize: 10, color: C.muted, letterSpacing: 1, whiteSpace: "nowrap" }}>
-                  Agent Platform
+                  AI Platform
                 </div>
               </div>
             </div>
@@ -151,9 +190,9 @@ export default function Layout({ currentPage, onNavigate, children }) {
         </div>
 
         {/* Nav items */}
-        <nav style={{ flex: 1, padding: "12px 8px", overflowY: "auto", overflowX: "hidden" }}>
+        <nav style={{ flex: 1, padding: "8px 8px", overflowY: "auto", overflowX: "hidden" }}>
           {collapsed
-            ? visibleNav.filter(i => i.label).map(item => (
+            ? visibleNav.filter(i => i.type === "link").map(item => (
               <button
                 key={item.page}
                 onClick={() => onNavigate(item.page)}
@@ -171,16 +210,20 @@ export default function Layout({ currentPage, onNavigate, children }) {
                 {item.icon}
               </button>
             ))
-            : visibleNav.map((item, i) => (
-              item.label === null
-                ? <div key={i} style={{ height: 1, background: C.border, margin: "8px 0" }} />
-                : <NavItem
-                    key={item.page}
-                    item={item}
-                    active={currentPage === item.page}
-                    onClick={onNavigate}
-                  />
-            ))
+            : visibleNav.map((item, i) => {
+              if (item.type === "section") {
+                return <SectionLabel key={`s-${i}`} label={item.label} />;
+              }
+              return (
+                <NavItem
+                  key={item.page}
+                  item={item}
+                  active={currentPage === item.page}
+                  onClick={onNavigate}
+                  badge={item.page === "emails" && emailBadge > 0 ? emailBadge : null}
+                />
+              );
+            })
           }
         </nav>
 

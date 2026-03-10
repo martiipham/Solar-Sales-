@@ -6,6 +6,9 @@
 *.db
 *.db-shm
 *.db-wal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
 
 # Python
 __pycache__/
@@ -50,3 +53,4 @@ htmlcov/
 
 # swarm-board deps
 swarm-board/node_modules/
+swarm-board/dist/

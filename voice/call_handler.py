@@ -26,6 +26,8 @@ Usage:
     # Post-call:    https://your-server.com/voice/post-call
 """
 
+import hashlib
+import hmac
 import json
 import logging
 import threading
@@ -93,6 +95,32 @@ def _cleanup_stale_contexts():
 
 # Start cleanup thread as daemon so it doesn't block shutdown
 threading.Thread(target=_cleanup_stale_contexts, daemon=True, name="ctx-cleanup").start()
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SIGNATURE VERIFICATION
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _verify_retell_signature() -> bool:
+    """Verify HMAC-SHA256 signature from Retell webhook request.
+
+    Retell sends the signature in the x-retell-signature header.
+    If RETELL_WEBHOOK_SECRET is not set, verification is skipped (dev mode).
+
+    Returns:
+        True if signature is valid or secret is not configured, False otherwise.
+    """
+    secret = config.get("RETELL_WEBHOOK_SECRET", "")
+    if not secret:
+        return True  # Skip verification when secret is not configured
+
+    sig_header = request.headers.get("x-retell-signature", "")
+    if not sig_header:
+        return False
+
+    raw_body = request.get_data()
+    expected = hmac.new(secret.encode(), raw_body, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, sig_header)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # SYSTEM PROMPT BUILDER
@@ -165,6 +193,8 @@ def call_started():
 
     Initialises the call context and logs the inbound call.
     """
+    if not _verify_retell_signature():
+        return jsonify({"error": "Invalid signature"}), 401
     try:
         data = request.get_json(force=True) or {}
         call_id      = data.get("call_id", "unknown")
@@ -186,7 +216,7 @@ def call_started():
 
         # Log to database
         _log_call(call_id, client_id, from_phone, "started")
-        print(f"[VOICE] Call started: {call_id} | from={from_phone} | client={client_id}")
+        logger.debug(f"[VOICE] Call started: {call_id} | client={client_id}")
 
         return jsonify({"status": "ok"}), 200
 
@@ -203,6 +233,8 @@ def retell_response():
     Retell sends the full conversation transcript and we return the next
     response from GPT-4o, potentially including function calls.
     """
+    if not _verify_retell_signature():
+        return jsonify({"error": "Invalid signature"}), 401
     try:
         data = request.get_json(force=True) or {}
         call_id          = data.get("call_id", "unknown")
@@ -293,25 +325,12 @@ def post_call():
     Retell sends this after the call ends with the full transcript,
     call duration, recording URL, and any detected sentiments.
     """
+    if not _verify_retell_signature():
+        return jsonify({"error": "Invalid signature"}), 401
     try:
         data    = request.get_json(force=True) or {}
         call_id = data.get("call_id", "unknown")
-        print(f"[VOICE] Post-call received: {call_id}")
-
-        # Log Retell call cost (duration provided in post-call payload)
-        try:
-            duration_s = int(data.get("duration_ms", 0) / 1000) or int(data.get("call_duration", 0))
-            ctx        = _call_contexts.get(call_id, {})
-            if duration_s > 0:
-                from tracking.cost_tracker import log_retell_call
-                log_retell_call(
-                    call_id=call_id,
-                    duration_seconds=duration_s,
-                    client_id=ctx.get("client_id"),
-                    agent_id=data.get("agent_id"),
-                )
-        except Exception:
-            pass
+        logger.debug(f"[VOICE] Post-call received: {call_id}")
 
         from voice.post_call import process_post_call
         with _ctx_lock:
@@ -420,19 +439,6 @@ def _call_llm(messages: list, allow_tools: bool = True) -> tuple[str, list]:
                 }
                 for tc in choice.tool_calls
             ]
-
-        # Log token usage for cost tracking
-        try:
-            usage = response.usage
-            if usage:
-                from tracking.cost_tracker import log_openai
-                log_openai(
-                    model=config.OPENAI_MODEL,
-                    prompt_tokens=usage.prompt_tokens,
-                    completion_tokens=usage.completion_tokens,
-                )
-        except Exception:
-            pass
 
         return text, tool_calls
 

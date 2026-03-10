@@ -1,484 +1,626 @@
-"""Email Processing Agent — Read inbound emails and fill the CRM.
+"""Email Processing Agent — classify, score, draft, and route inbound emails.
 
 Handles emails from two sources:
-  1. GHL webhook (GHL forwards email events to POST /webhook/email-received)
-  2. Direct IMAP polling (optional — polls a Gmail/Outlook inbox)
+  1. GHL webhook (POST /webhook/email-received wired in main.py)
+  2. Direct IMAP polling (optional — set IMAP_HOST/USER/PASS in .env)
 
 For each email:
-  - Extracts structured lead data using GPT-4o
-  - Creates or updates the GHL contact
-  - Scores the lead via qualification_agent
-  - Routes the lead (call now / nurture / disqualify)
-  - Auto-drafts an AI reply for high-value leads (human reviews before sending)
-  - Tags in GHL for pipeline automation
-  - Posts Slack notification
-
-Flask routes (registered in main.py):
-  POST /webhook/email-received   — GHL email event
-  GET  /email/status             — health/status check
+  a) Classify: NEW_ENQUIRY | QUOTE_REQUEST | COMPLAINT | BOOKING_REQUEST | SPAM | OTHER
+  b) Extract: sender name, phone, suburb, system size interest, urgency signals
+  c) Score urgency 1-10
+  d) Draft a GPT-4o reply matching company tone, answering their question,
+     ending with a CTA to book a free assessment, signed off as
+     "The [Company Name] Team"
+  e) urgency >= 8  → auto-send via GHL + Slack alert
+     urgency 5-7   → queue draft for human-gate approval
+     urgency < 5 or SPAM → log and discard
 
 Usage:
-    from email_processing.email_agent import process_email, start_imap_polling
+    from email_processing.email_agent import process_email
     process_email({"from": "...", "subject": "...", "body": "..."})
 """
 
 import email
+import email.utils
 import imaplib
 import json
 import logging
+import re
 import threading
 import time
 from datetime import datetime
 
 import config
-from memory.database import insert, fetch_one, get_conn
+from memory.database import insert, fetch_one, update, get_conn
 
 logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────────────────────────
-# EXTRACTION PROMPT
+# ENSURE EMAILS TABLE EXISTS (owned by this module)
 # ─────────────────────────────────────────────────────────────────────────────
 
-EXTRACT_EMAIL_PROMPT = """You are analysing an inbound email to an Australian solar company.
-Extract all structured information and determine the intent.
+def _ensure_emails_table():
+    """Create the emails table if it does not already exist."""
+    with get_conn() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS emails (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                received_at     TEXT DEFAULT (datetime('now')),
+                from_email      TEXT NOT NULL,
+                from_name       TEXT,
+                subject         TEXT,
+                body            TEXT,
+                classification  TEXT
+                    CHECK(classification IN (
+                        'NEW_ENQUIRY','QUOTE_REQUEST','COMPLAINT',
+                        'BOOKING_REQUEST','SPAM','OTHER')),
+                urgency_score   INTEGER DEFAULT 0,
+                draft_reply     TEXT,
+                status          TEXT DEFAULT 'pending'
+                    CHECK(status IN ('pending','sent','discarded')),
+                ghl_contact_id  TEXT
+            )
+        """)
 
-Return ONLY valid JSON:
+
+# Run once on import
+_ensure_emails_table()
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CLASSIFICATION + EXTRACTION PROMPT
+# ─────────────────────────────────────────────────────────────────────────────
+
+_CLASSIFY_PROMPT = """You are processing an inbound email for an Australian solar company.
+
+Analyse the email and return ONLY valid JSON with these fields:
+
 {
-  "intent": "quote_request|support_existing|general_inquiry|complaint|not_solar_related",
-  "priority": "high|medium|low",
-  "name":             "sender's full name or null",
-  "email_address":    "sender's email or null",
-  "phone":            "phone number mentioned or null",
-  "suburb":           "suburb/city mentioned or null",
-  "state":            "Australian state code or null",
-  "homeowner_status": "owner|renter|unknown",
-  "monthly_bill":     <number in AUD or null>,
-  "roof_type":        "tile|colorbond|flat|metal|unknown or null",
-  "system_size_kw":   <number or null>,
-  "interested_in_battery": <true|false|null>,
-  "has_ev":           <true|false|null>,
-  "urgency":          "immediate|within_week|no_rush|unknown",
-  "preferred_contact": "phone|email|either",
-  "summary":          "2 sentence summary of the email",
-  "draft_reply":      "A professional, warm reply to this email in Australian English, addressing their specific questions. Offer a free site assessment. Keep it under 150 words.",
-  "crm_note":         "Internal CRM note summarising key points for the sales team (1-2 sentences)"
-}"""
+  "classification": "NEW_ENQUIRY|QUOTE_REQUEST|COMPLAINT|BOOKING_REQUEST|SPAM|OTHER",
+  "urgency_score": <integer 1-10>,
+  "urgency_signals": ["list of phrases signalling urgency"],
+  "from_name": "sender full name or null",
+  "phone": "phone number if mentioned or null",
+  "suburb": "suburb or city mentioned or null",
+  "system_size_kw": <number or null>,
+  "battery_interest": <true|false|null>,
+  "summary": "one sentence describing the email"
+}
+
+Urgency scoring guide:
+  9-10: Ready to buy now, requesting immediate callback, very time-sensitive
+  7-8:  Actively comparing quotes, clear intent to proceed soon
+  5-6:  Interested but no specific timeline
+  3-4:  Early research, no clear intent
+  1-2:  Spam, completely off-topic, or bot
+
+Classification guide:
+  NEW_ENQUIRY    — first contact, general interest in solar
+  QUOTE_REQUEST  — asking for a price or quote
+  COMPLAINT      — unhappy with existing installation or service
+  BOOKING_REQUEST— wants to book a site visit or assessment
+  SPAM           — marketing, unsolicited, bot
+  OTHER          — anything else that is solar-related
+"""
+
+_DRAFT_PROMPT = """You are a friendly but professional solar consultant replying on behalf of {company_name}.
+
+Write a reply email to {from_name} who sent: "{summary}"
+
+Requirements:
+- Warm, professional Australian English (not American)
+- Directly answer their specific question or acknowledge their request
+- Include a clear CTA to book a free solar assessment
+- Keep it under 160 words
+- Sign off as "The {company_name} Team"
+- Do NOT include a subject line — body only
+
+Previous thread context (newest first):
+{thread_context}
+"""
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# MAIN EMAIL PROCESSOR
+# MAIN ENTRY POINT
 # ─────────────────────────────────────────────────────────────────────────────
 
 def process_email(email_data: dict, client_id: str = "default") -> dict:
-    """Process an inbound email — extract, score, update CRM, notify.
+    """Process one inbound email end-to-end.
 
     Args:
-        email_data: Dict with from_address, subject, body, to_address, received_at
-        client_id: Company client ID (resolved from to_address if possible)
+        email_data: Dict with keys: from_address (or from), subject, body
+                    (also accepts text_body, html_body, to_address/to)
+        client_id:  Solar company client ID; resolved from to_address if possible
 
     Returns:
-        Processing result dict
+        Result dict with keys: processed, email_id, classification,
+        urgency_score, status, draft_reply
     """
     from_addr = email_data.get("from_address") or email_data.get("from", "")
     subject   = email_data.get("subject", "")
-    body      = email_data.get("body") or email_data.get("text_body") or email_data.get("html_body", "")
+    body      = (email_data.get("body")
+                 or email_data.get("text_body")
+                 or email_data.get("html_body", ""))
     to_addr   = email_data.get("to_address") or email_data.get("to", "")
 
-    # Resolve client from to_address
     if to_addr:
         client_id = _resolve_client_from_email(to_addr) or client_id
 
-    print(f"[EMAIL AGENT] Processing email from={from_addr} subject='{subject[:60]}'")
+    # ── 0. Check master kill-switch
+    try:
+        from api.settings_api import get_setting
+        if get_setting("email.agent_enabled", "true") != "true":
+            print("[EMAIL AGENT] Disabled via settings — skipping")
+            return {"processed": False, "reason": "email agent disabled"}
+    except Exception:
+        pass  # settings not yet available — allow through
 
-    # ── Step 1: Extract structured data
-    extracted = _extract_from_email(from_addr, subject, body)
+    print(f"[EMAIL AGENT] Processing from={from_addr} subject='{subject[:60]}'")
 
-    # ── Step 2: Skip non-solar emails
-    if extracted.get("intent") == "not_solar_related":
-        print(f"[EMAIL AGENT] Skipping — not solar related: {subject[:40]}")
-        return {"processed": False, "reason": "not_solar_related"}
+    # ── 1. Classify & extract
+    extracted = _classify_and_extract(from_addr, subject, body)
+    classification = extracted.get("classification", "OTHER")
+    urgency        = int(extracted.get("urgency_score", 1))
 
-    # ── Step 3: Merge sender info into extracted data
-    if not extracted.get("email_address"):
-        extracted["email_address"] = from_addr
+    # ── 2. Discard immediately based on settings
+    try:
+        from api.settings_api import get_setting as _gs
+        _auto_discard_spam = _gs("email.auto_discard_spam", "true") == "true"
+    except Exception:
+        _auto_discard_spam = True
 
-    # ── Step 4: Find or create lead in DB
-    lead_id, ghl_id = _upsert_lead(extracted, client_id, email_data)
+    if (_auto_discard_spam and classification == "SPAM") or urgency < 5:
+        email_id = _save_email(
+            from_addr, extracted.get("from_name"), subject, body,
+            classification, urgency, draft_reply=None,
+            status="discarded", ghl_contact_id=None,
+        )
+        print(f"[EMAIL AGENT] Discarded — class={classification} urgency={urgency}")
+        return {"processed": True, "email_id": email_id,
+                "classification": classification, "urgency_score": urgency,
+                "status": "discarded", "draft_reply": None}
 
-    # ── Step 5: Score the lead
-    score, action = _score_lead(extracted, lead_id)
+    # ── 3. Fetch company info and thread context
+    company_name  = _get_company_name(client_id)
+    ghl_contact_id = _resolve_ghl_contact(from_addr)
+    thread_context = _get_thread_context(ghl_contact_id)
 
-    # ── Step 6: Update GHL
-    _update_ghl_from_email(ghl_id, extracted, score, action, subject)
+    # ── 4. Draft reply
+    try:
+        from api.settings_api import get_setting as _gs
+        _custom_prompt = _gs("email.reply_prompt", "") or ""
+    except Exception:
+        _custom_prompt = ""
 
-    # ── Step 7: Log to email_logs table
-    _log_email(from_addr, subject, client_id, lead_id, score, action, extracted)
+    draft = _draft_reply(
+        company_name=company_name,
+        from_name=extracted.get("from_name") or from_addr,
+        summary=extracted.get("summary") or subject,
+        thread_context=thread_context,
+        custom_instructions=_custom_prompt,
+    )
 
-    # ── Step 8: Notify Slack
-    _notify_slack(extracted, score, action, subject, client_id)
+    # ── 5. Persist to emails table (initially pending)
+    email_id = _save_email(
+        from_addr, extracted.get("from_name"), subject, body,
+        classification, urgency, draft_reply=draft,
+        status="pending", ghl_contact_id=ghl_contact_id,
+    )
 
-    # ── Step 9: Cold ledger
-    logger.info("EMAIL_LEAD_PROCESSED " + json.dumps({
-        "from": from_addr,
-        "subject": subject[:80],
-        "intent": extracted.get("intent"),
-        "score": score,
-        "action": action,
-        "client_id": client_id,
-    }), agent_id="email_agent", human_involved=0)
+    # ── 6. Route by urgency + settings
+    try:
+        from api.settings_api import get_setting as _gs
+        _auto_send_on  = _gs("email.auto_send_enabled", "false") == "true"
+        _auto_threshold = int(_gs("email.auto_send_threshold", "9") or "9")
+    except Exception:
+        _auto_send_on, _auto_threshold = False, 9
 
-    # ── Step 10: Store draft reply for human review (high value leads)
-    draft_reply = extracted.get("draft_reply", "")
-    if score and score >= 7 and draft_reply:
-        _queue_draft_reply(ghl_id, from_addr, subject, draft_reply)
+    if _auto_send_on and urgency >= _auto_threshold:
+        _auto_send(email_id, from_addr, subject, draft, ghl_contact_id)
+        _notify_auto_sent(from_addr, subject, classification, urgency, draft)
+        status = "sent"
+    else:
+        # Queue for human review
+        _notify_draft_for_approval(email_id, subject, from_addr, classification, urgency, draft)
+        status = "pending"
 
-    print(f"[EMAIL AGENT] Done: score={score} action={action} intent={extracted.get('intent')}")
+    # Update status in DB
+    update("emails", email_id, {"status": status})
+
+    print(f"[EMAIL AGENT] Done email_id={email_id} class={classification} "
+          f"urgency={urgency} status={status}")
     return {
-        "processed":   True,
-        "lead_id":     lead_id,
-        "score":       score,
-        "action":      action,
-        "intent":      extracted.get("intent"),
-        "draft_reply": draft_reply,
+        "processed":      True,
+        "email_id":       email_id,
+        "classification": classification,
+        "urgency_score":  urgency,
+        "status":         status,
+        "draft_reply":    draft,
     }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# EXTRACTION
+# CLASSIFICATION & EXTRACTION
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _extract_from_email(from_addr: str, subject: str, body: str) -> dict:
-    """Use GPT-4o to extract structured data from an email.
+def _classify_and_extract(from_addr: str, subject: str, body: str) -> dict:
+    """Use GPT-4o to classify the email and extract key fields.
 
     Args:
-        from_addr: Sender email address
-        subject: Email subject
-        body: Email body (text or HTML)
+        from_addr: Sender email
+        subject:   Email subject
+        body:      Email body text
 
     Returns:
-        Extracted data dict
+        Extracted data dict; falls back to rule-based if GPT unavailable
     """
     if not config.is_configured():
-        return _rule_based_email_extract(from_addr, subject, body)
+        return _rule_based_classify(from_addr, subject, body)
 
     try:
         from openai import OpenAI
         client = OpenAI(api_key=config.OPENAI_API_KEY)
-
-        # Truncate body to keep within token limits
-        body_truncated = body[:3000] if len(body) > 3000 else body
-
-        content = f"FROM: {from_addr}\nSUBJECT: {subject}\n\nBODY:\n{body_truncated}"
+        content = f"FROM: {from_addr}\nSUBJECT: {subject}\n\nBODY:\n{body[:3000]}"
         response = client.chat.completions.create(
             model=config.OPENAI_MODEL,
             messages=[
-                {"role": "system", "content": EXTRACT_EMAIL_PROMPT},
+                {"role": "system", "content": _CLASSIFY_PROMPT},
                 {"role": "user",   "content": content},
             ],
-            temperature=0.2,
-            max_tokens=800,
+            temperature=0.1,
+            max_tokens=400,
         )
         raw = response.choices[0].message.content.strip()
         return json.loads(raw)
 
     except json.JSONDecodeError as e:
-        logger.error(f"[EMAIL AGENT] JSON parse error: {e}")
-        return _rule_based_email_extract(from_addr, subject, body)
+        logger.error(f"[EMAIL AGENT] JSON parse error in classify: {e}")
+        return _rule_based_classify(from_addr, subject, body)
     except Exception as e:
-        logger.error(f"[EMAIL AGENT] GPT extraction failed: {e}")
-        return _rule_based_email_extract(from_addr, subject, body)
+        logger.error(f"[EMAIL AGENT] GPT classify failed: {e}")
+        return _rule_based_classify(from_addr, subject, body)
 
 
-def _rule_based_email_extract(from_addr: str, subject: str, body: str) -> dict:
-    """Fallback rule-based extraction when OpenAI is unavailable.
+def _rule_based_classify(from_addr: str, subject: str, body: str) -> dict:
+    """Fallback rule-based classifier used when OpenAI is unavailable.
 
     Args:
         from_addr: Sender email
-        subject: Email subject
-        body: Email body
+        subject:   Email subject
+        body:      Email body
 
     Returns:
-        Basic extracted data
+        Basic classification dict
     """
     text = f"{subject} {body}".lower()
-    intent = "general_inquiry"
-    if any(w in text for w in ("quote", "price", "cost", "how much", "interest")):
-        intent = "quote_request"
-    elif any(w in text for w in ("issue", "problem", "not working", "fault")):
-        intent = "support_existing"
-    elif any(w in text for w in ("complaint", "disappointed", "unhappy")):
-        intent = "complaint"
 
-    priority = "high" if intent == "quote_request" else "medium"
+    if any(w in text for w in ("unsubscribe", "click here", "dear valued", "winner")):
+        return {"classification": "SPAM", "urgency_score": 1,
+                "urgency_signals": [], "from_name": None,
+                "phone": None, "suburb": None, "summary": subject[:80]}
 
-    # Try to extract bill amount
-    import re
-    bill = None
-    bill_match = re.search(r'\$(\d+)', body)
-    if bill_match:
-        bill = float(bill_match.group(1))
+    if any(w in text for w in ("book", "schedule", "appointment", "site visit")):
+        classification, urgency = "BOOKING_REQUEST", 7
+    elif any(w in text for w in ("quote", "price", "cost", "how much")):
+        classification, urgency = "QUOTE_REQUEST", 6
+    elif any(w in text for w in ("complaint", "unhappy", "disappointed", "issue", "problem")):
+        classification, urgency = "COMPLAINT", 6
+    elif any(w in text for w in ("interested", "enquire", "enquiry", "information")):
+        classification, urgency = "NEW_ENQUIRY", 5
+    else:
+        classification, urgency = "OTHER", 4
+
+    phone_match = re.search(r'(\b04\d{8}\b|\b\+?61\s?4\d{2}\s?\d{3}\s?\d{3}\b)', body)
+    phone = phone_match.group(0) if phone_match else None
 
     return {
-        "intent":           intent,
-        "priority":         priority,
-        "email_address":    from_addr,
-        "name":             None,
-        "phone":            None,
-        "suburb":           None,
-        "state":            None,
-        "homeowner_status": "unknown",
-        "monthly_bill":     bill,
-        "urgency":          "unknown",
-        "summary":          f"Email from {from_addr}: {subject[:80]}",
-        "draft_reply":      None,
-        "crm_note":         f"Email received: {subject[:80]}",
+        "classification": classification,
+        "urgency_score":  urgency,
+        "urgency_signals": [],
+        "from_name":      None,
+        "phone":          phone,
+        "suburb":         None,
+        "system_size_kw": None,
+        "battery_interest": None,
+        "summary":        f"Email from {from_addr}: {subject[:80]}",
     }
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CRM OPERATIONS
+# DRAFT REPLY
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _upsert_lead(extracted: dict, client_id: str, email_data: dict) -> tuple:
-    """Find existing lead by email or create a new one.
+def _draft_reply(company_name: str, from_name: str, summary: str,
+                 thread_context: str = "", custom_instructions: str = "") -> str:
+    """Generate a GPT-4o reply draft matching the company's tone.
 
     Args:
-        extracted: GPT-extracted email data
-        client_id: Company client ID
-        email_data: Original email payload
+        company_name:   Solar company display name
+        from_name:      Sender name for personalisation
+        summary:        One-line summary of their email
+        thread_context: Prior thread messages for context
 
     Returns:
-        Tuple of (lead_db_id, ghl_contact_id)
+        Draft reply body text
     """
-    email_addr = extracted.get("email_address")
-    ghl_id     = None
+    if not config.is_configured():
+        return _fallback_draft(company_name, from_name)
 
-    # Check local DB
-    existing = fetch_one("SELECT id FROM leads WHERE email = ?", (email_addr,)) if email_addr else {}
-    db_id    = existing.get("id") if existing else None
-
-    if db_id:
-        with get_conn() as conn:
-            updates = {k: v for k, v in {
-                "name":             extracted.get("name"),
-                "phone":            extracted.get("phone"),
-                "suburb":           extracted.get("suburb"),
-                "state":            extracted.get("state"),
-                "homeowner_status": extracted.get("homeowner_status"),
-                "monthly_bill":     extracted.get("monthly_bill"),
-            }.items() if v is not None}
-            if updates:
-                assigns = ", ".join(f"{k} = ?" for k in updates)
-                conn.execute(f"UPDATE leads SET {assigns} WHERE id = ?", list(updates.values()) + [db_id])
-    else:
-        db_id = insert("leads", {
-            "source":           "manual",
-            "name":             extracted.get("name") or email_addr,
-            "email":            email_addr,
-            "phone":            extracted.get("phone"),
-            "suburb":           extracted.get("suburb"),
-            "state":            extracted.get("state"),
-            "homeowner_status": extracted.get("homeowner_status", "unknown"),
-            "monthly_bill":     extracted.get("monthly_bill"),
-            "status":           "new",
-            "client_account":   client_id,
-            "notes":            f"Via email: {extracted.get('crm_note', '')}",
-        })
-
-    # Create/update GHL contact
     try:
-        from integrations.ghl_client import create_contact, is_configured
-        if is_configured() and email_addr:
-            result = create_contact({
-                "email":      email_addr,
-                "firstName":  (extracted.get("name") or "").split()[0] if extracted.get("name") else "",
-                "lastName":   " ".join((extracted.get("name") or "").split()[1:]) or "",
-                "phone":      extracted.get("phone"),
-                "city":       extracted.get("suburb"),
-                "state":      extracted.get("state"),
-                "source":     "email",
-                "tags":       ["email-lead"],
-            })
-            if result:
-                ghl_id = result.get("contact", {}).get("id")
-    except Exception as e:
-        logger.error(f"[EMAIL AGENT] GHL contact failed: {e}")
+        from openai import OpenAI
+        client = OpenAI(api_key=config.OPENAI_API_KEY)
+        extra = f"\n\nAdditional instructions: {custom_instructions}" if custom_instructions else ""
+        prompt = _DRAFT_PROMPT.format(
+            company_name=company_name,
+            from_name=from_name,
+            summary=summary,
+            thread_context=thread_context or "No prior messages.",
+        ) + extra
+        response = client.chat.completions.create(
+            model=config.OPENAI_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0.6,
+            max_tokens=350,
+        )
+        return response.choices[0].message.content.strip()
 
-    return db_id, ghl_id
-
-
-def _score_lead(extracted: dict, lead_id: int) -> tuple:
-    """Score the email lead.
-
-    Args:
-        extracted: Extracted email data
-        lead_id: Lead DB ID
-
-    Returns:
-        Tuple of (score, action)
-    """
-    try:
-        from agents.qualification_agent import qualify
-        lead_data = {
-            "name":             extracted.get("name", "Email Lead"),
-            "email":            extracted.get("email_address"),
-            "homeowner_status": extracted.get("homeowner_status", "unknown"),
-            "monthly_bill":     extracted.get("monthly_bill"),
-            "state":            extracted.get("state"),
-        }
-        result = qualify(lead_data, lead_id)
-        return result.get("score"), result.get("recommended_action")
-    except Exception as e:
-        logger.error(f"[EMAIL AGENT] Scoring failed: {e}")
-        return None, "nurture"
-
-
-def _update_ghl_from_email(ghl_id: str, extracted: dict, score, action: str, subject: str):
-    """Update GHL contact with email-derived data.
-
-    Args:
-        ghl_id: GHL contact ID
-        extracted: Extracted data
-        score: Lead score
-        action: Recommended action
-        subject: Email subject
-    """
-    if not ghl_id:
-        return
-    try:
-        from integrations.ghl_client import update_contact_field, add_contact_tag, is_configured
-        if not is_configured():
-            return
-
-        if score:
-            update_contact_field(ghl_id, "ai_lead_score",         str(score))
-            update_contact_field(ghl_id, "ai_recommended_action", action or "")
-        if extracted.get("homeowner_status"):
-            update_contact_field(ghl_id, "homeowner_status", extracted["homeowner_status"])
-        if extracted.get("monthly_bill"):
-            update_contact_field(ghl_id, "monthly_electricity_bill", str(extracted["monthly_bill"]))
-        if extracted.get("crm_note"):
-            update_contact_field(ghl_id, "ai_email_summary", extracted["crm_note"][:500])
-
-        add_contact_tag(ghl_id, "email-inquiry")
-        add_contact_tag(ghl_id, f"intent-{extracted.get('intent','unknown')}")
-        if score and score >= 7:
-            add_contact_tag(ghl_id, "hot-lead")
-        if extracted.get("interested_in_battery"):
-            add_contact_tag(ghl_id, "battery-interest")
-
-    except Exception as e:
-        logger.error(f"[EMAIL AGENT] GHL update failed: {e}")
-
-
-def _queue_draft_reply(ghl_id: str, to_email: str, subject: str, draft: str):
-    """Store the AI-drafted reply for human review before sending.
-
-    Creates a GHL note with the draft so the sales team can review and send.
-
-    Args:
-        ghl_id: GHL contact ID
-        to_email: Recipient email
-        subject: Email subject
-        draft: Draft reply text
-    """
-    try:
-        from integrations.ghl_client import update_contact_field, is_configured
-        if ghl_id and is_configured():
-            update_contact_field(ghl_id, "ai_draft_reply", f"Re: {subject}\n\n{draft}")
-        print(f"[EMAIL AGENT] Draft reply queued for {to_email} — review in GHL before sending")
     except Exception as e:
         logger.error(f"[EMAIL AGENT] Draft reply failed: {e}")
+        return _fallback_draft(company_name, from_name)
 
 
-# ─────────────────────────────────────────────────────────────────────────────
-# LOGGING
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _log_email(from_addr: str, subject: str, client_id: str, lead_id: int, score, action: str, extracted: dict):
-    """Log processed email to email_logs table.
+def _fallback_draft(company_name: str, from_name: str) -> str:
+    """Static fallback reply when GPT is unavailable.
 
     Args:
-        from_addr: Sender email
-        subject: Email subject
-        client_id: Client ID
-        lead_id: Lead DB ID
-        score: Lead score
-        action: Recommended action
-        extracted: Extracted data
+        company_name: Solar company name
+        from_name:    Sender's name
+
+    Returns:
+        Generic reply string
+    """
+    return (
+        f"Hi {from_name},\n\n"
+        "Thank you for reaching out to us! We'd love to help you explore your "
+        "solar options.\n\n"
+        "To get started, we'd like to offer you a free, no-obligation solar "
+        "assessment at your property. One of our specialists will assess your "
+        "roof, review your electricity usage, and give you a personalised "
+        "recommendation.\n\n"
+        "Reply to this email or call us to book your free assessment today.\n\n"
+        f"The {company_name} Team"
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# AUTO-SEND (urgency >= 8)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _auto_send(email_id: int, to_email: str, subject: str,
+               draft: str, ghl_contact_id: str | None):
+    """Send the draft reply automatically via GHL and log the result.
+
+    Args:
+        email_id:       DB row id in emails table
+        to_email:       Recipient email
+        subject:        Original email subject (used to form Re: subject)
+        draft:          Draft reply body
+        ghl_contact_id: GHL contact ID (may be None)
     """
     try:
-        with get_conn() as conn:
-            conn.execute(
-                """INSERT INTO email_logs
-                   (from_address, subject, client_id, lead_id, intent, score, action, summary, received_at)
-                   VALUES (?,?,?,?,?,?,?,?,?)""",
-                (from_addr, subject[:200], client_id, lead_id,
-                 extracted.get("intent"), score, action,
-                 extracted.get("summary", "")[:500],
-                 datetime.utcnow().isoformat())
-            )
+        from email_processing.email_sender import send_via_ghl
+        result = send_via_ghl(to_email, f"Re: {subject}", draft)
+        if result:
+            print(f"[EMAIL AGENT] Auto-sent reply to {to_email} (email_id={email_id})")
+        else:
+            logger.error(f"[EMAIL AGENT] Auto-send failed for email_id={email_id}")
     except Exception as e:
-        logger.error(f"[EMAIL AGENT] Log failed: {e}")
+        logger.error(f"[EMAIL AGENT] Auto-send error: {e}")
 
 
-def _notify_slack(extracted: dict, score, action: str, subject: str, client_id: str):
-    """Post Slack notification for inbound email.
+# ─────────────────────────────────────────────────────────────────────────────
+# NOTIFICATIONS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _notify_auto_sent(from_email: str, subject: str, classification: str,
+                      urgency: int, draft: str):
+    """Post a Slack alert when a reply was automatically sent.
 
     Args:
-        extracted: Extracted data
-        score: Lead score
-        action: Recommended action
-        subject: Email subject
-        client_id: Client ID
+        from_email:     Sender email
+        subject:        Email subject
+        classification: Classified intent
+        urgency:        Urgency score
+        draft:          The reply that was sent
     """
     try:
-        from notifications.slack_notifier import _post
-        intent = extracted.get("intent", "unknown")
-        if intent == "not_solar_related":
-            return
-
-        score_emoji = "🔥" if (score or 0) >= 7 else "📋" if (score or 0) >= 5 else "📧"
-        priority    = extracted.get("priority", "medium")
-        urgency     = extracted.get("urgency", "unknown")
-        name        = extracted.get("name") or extracted.get("email_address", "Unknown")
-
+        from notifications.slack_notifier import _post, _block
         msg = (
-            f"{score_emoji} *Inbound Email — {intent.replace('_',' ').title()}*\n"
-            f"*From:* {name}  |  *Score:* {score}/10\n"
-            f"*Subject:* {subject[:60]}\n"
-            f"*Priority:* {priority}  |  *Urgency:* {urgency}  |  *Action:* {action}\n"
+            f"*🚀 Email Auto-Replied* (urgency {urgency}/10)\n"
+            f"*From:* {from_email}\n"
+            f"*Subject:* {subject[:80]}\n"
+            f"*Classification:* {classification}\n"
+            f"*Sent reply preview:* _{draft[:200]}..._"
         )
-        if extracted.get("summary"):
-            msg += f"*Summary:* _{extracted['summary']}_"
-        if action == "call_now":
-            msg += "\n*Call this lead now — high value email inquiry!*"
-
-        _post(msg)
-
+        _post({"blocks": [_block(msg)]})
     except Exception as e:
-        logger.error(f"[EMAIL AGENT] Slack failed: {e}")
+        logger.error(f"[EMAIL AGENT] Slack auto-sent notify failed: {e}")
+
+
+def _notify_draft_for_approval(email_id: int, subject: str, from_email: str,
+                                classification: str, urgency: int, draft: str):
+    """Send Slack notification with approve/discard buttons for the draft.
+
+    Args:
+        email_id:       DB row id for the email
+        subject:        Email subject
+        from_email:     Sender email
+        classification: Classified intent
+        urgency:        Urgency score
+        draft:          Drafted reply text
+    """
+    try:
+        from notifications.slack_notifier import notify_email_draft
+        notify_email_draft(
+            email_id=email_id,
+            subject=subject,
+            from_email=from_email,
+            classification=classification,
+            urgency=urgency,
+            draft_preview=draft[:300],
+        )
+    except Exception as e:
+        logger.error(f"[EMAIL AGENT] Slack draft notify failed: {e}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# IMAP POLLING (optional — direct inbox reading)
+# DB HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _save_email(from_email: str, from_name: str | None, subject: str,
+                body: str, classification: str, urgency_score: int,
+                draft_reply: str | None, status: str,
+                ghl_contact_id: str | None) -> int:
+    """Persist an inbound email record to the emails table.
+
+    Args:
+        from_email:     Sender email address
+        from_name:      Sender name (may be None)
+        subject:        Email subject
+        body:           Email body (truncated to 10000 chars for storage)
+        classification: One of the 6 classification values
+        urgency_score:  Integer 1-10
+        draft_reply:    AI-drafted reply text or None
+        status:         pending | sent | discarded
+        ghl_contact_id: GHL contact ID or None
+
+    Returns:
+        New row id
+    """
+    return insert("emails", {
+        "from_email":     from_email,
+        "from_name":      from_name,
+        "subject":        subject[:200] if subject else "",
+        "body":           body[:10000] if body else "",
+        "classification": classification,
+        "urgency_score":  urgency_score,
+        "draft_reply":    draft_reply,
+        "status":         status,
+        "ghl_contact_id": ghl_contact_id,
+    })
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GHL / CRM HELPERS
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _resolve_ghl_contact(from_email: str) -> str | None:
+    """Fetch or create a GHL contact for the sender.
+
+    Args:
+        from_email: Sender email address
+
+    Returns:
+        GHL contact ID or None
+    """
+    try:
+        from integrations.ghl_client import create_contact, is_configured
+        if not is_configured():
+            return None
+        result = create_contact({
+            "email":  from_email,
+            "source": "email",
+            "tags":   ["email-lead"],
+        })
+        return result.get("contact", {}).get("id") if result else None
+    except Exception as e:
+        logger.error(f"[EMAIL AGENT] GHL contact failed: {e}")
+        return None
+
+
+def _get_thread_context(ghl_contact_id: str | None) -> str:
+    """Return the last 5 email messages as formatted context text.
+
+    Args:
+        ghl_contact_id: GHL contact ID or None
+
+    Returns:
+        Formatted string with prior messages, or empty string
+    """
+    if not ghl_contact_id:
+        return ""
+    try:
+        from email_processing.email_sender import get_thread_history
+        messages = get_thread_history(ghl_contact_id, limit=5)
+        if not messages:
+            return ""
+        lines = []
+        for m in messages:
+            direction = "↓ Inbound" if m.get("direction") == "inbound" else "↑ Outbound"
+            body_snippet = (m.get("body") or m.get("text") or "")[:150]
+            lines.append(f"{direction}: {body_snippet}")
+        return "\n".join(lines)
+    except Exception as e:
+        logger.error(f"[EMAIL AGENT] Thread context failed: {e}")
+        return ""
+
+
+def _get_company_name(client_id: str) -> str:
+    """Fetch the display name for a solar company client.
+
+    Args:
+        client_id: Client ID string
+
+    Returns:
+        Company name string (falls back to 'Your Solar Team')
+    """
+    try:
+        row = fetch_one(
+            "SELECT company_name, name FROM company_profiles WHERE client_id = ?",
+            (client_id,),
+        )
+        return row.get("company_name") or row.get("name") or "Your Solar Team"
+    except Exception:
+        return "Your Solar Team"
+
+
+def _resolve_client_from_email(to_address: str) -> str | None:
+    """Resolve client_id from the email address the message was sent to.
+
+    Args:
+        to_address: The recipient email address
+
+    Returns:
+        client_id or None
+    """
+    try:
+        row = fetch_one(
+            "SELECT client_id FROM company_profiles WHERE email = ? AND active = 1",
+            (to_address,),
+        )
+        return row.get("client_id") if row else None
+    except Exception:
+        return None
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# IMAP POLLING (optional — polls a direct inbox)
 # ─────────────────────────────────────────────────────────────────────────────
 
 def start_imap_polling(interval_seconds: int = 120):
     """Start background thread that polls the configured IMAP inbox.
 
     Only starts if IMAP_HOST, IMAP_USER, IMAP_PASS are configured.
-    Processes all unread emails in the inbox.
 
     Args:
-        interval_seconds: How often to check (default: 2 minutes)
+        interval_seconds: How often to check in seconds (default 2 min)
     """
-    if not all([config.get("IMAP_HOST"), config.get("IMAP_USER"), config.get("IMAP_PASS")]):
-        print("[EMAIL AGENT] IMAP not configured — skipping inbox polling (set IMAP_HOST/USER/PASS in .env)")
+    if not all([config.IMAP_HOST, config.IMAP_USER, config.IMAP_PASS]):
+        print("[EMAIL AGENT] IMAP not configured — skipping inbox polling")
         return
 
     def _poll():
-        print(f"[EMAIL AGENT] IMAP polling started — checking every {interval_seconds}s")
+        print(f"[EMAIL AGENT] IMAP polling started — every {interval_seconds}s")
         while True:
             try:
                 _check_imap_inbox()
@@ -492,53 +634,46 @@ def start_imap_polling(interval_seconds: int = 120):
 
 
 def _check_imap_inbox():
-    """Connect to IMAP inbox and process all unread emails."""
-    host     = config.get("IMAP_HOST", "imap.gmail.com")
-    user     = config.get("IMAP_USER", "")
-    password = config.get("IMAP_PASS", "")
-    folder   = config.get("IMAP_FOLDER", "INBOX")
-    client_id = config.get("DEFAULT_CLIENT_ID", "default")
+    """Connect to IMAP and process all unread messages."""
+    host      = config.IMAP_HOST
+    user      = config.IMAP_USER
+    password  = config.IMAP_PASS
+    folder    = config.IMAP_FOLDER
+    client_id = config.DEFAULT_CLIENT_ID
 
-    try:
-        mail = imaplib.IMAP4_SSL(host)
-        mail.login(user, password)
-        mail.select(folder)
+    mail = imaplib.IMAP4_SSL(host)
+    mail.login(user, password)
+    mail.select(folder)
 
-        _, msgs = mail.search(None, "UNSEEN")
-        msg_ids = msgs[0].split()
-
-        if not msg_ids:
-            return
-
-        print(f"[EMAIL AGENT] {len(msg_ids)} unread emails found")
-
-        for msg_id in msg_ids:
-            try:
-                _, msg_data = mail.fetch(msg_id, "(RFC822)")
-                raw_email   = msg_data[0][1]
-                msg         = email.message_from_bytes(raw_email)
-
-                from_addr = email.utils.parseaddr(msg.get("From", ""))[1]
-                subject   = msg.get("Subject", "")
-                body      = _extract_email_body(msg)
-
-                process_email({
-                    "from_address": from_addr,
-                    "subject":      subject,
-                    "body":         body,
-                    "received_at":  msg.get("Date", ""),
-                }, client_id=client_id)
-
-                # Mark as read
-                mail.store(msg_id, "+FLAGS", "\\Seen")
-
-            except Exception as e:
-                logger.error(f"[EMAIL AGENT] Error processing msg {msg_id}: {e}")
-
+    _, msgs = mail.search(None, "UNSEEN")
+    msg_ids = msgs[0].split()
+    if not msg_ids:
         mail.logout()
+        return
 
-    except imaplib.IMAP4.error as e:
-        logger.error(f"[EMAIL AGENT] IMAP auth error: {e}")
+    print(f"[EMAIL AGENT] {len(msg_ids)} unread email(s) found via IMAP")
+    for msg_id in msg_ids:
+        try:
+            _, msg_data = mail.fetch(msg_id, "(RFC822)")
+            raw_email   = msg_data[0][1]
+            msg         = email.message_from_bytes(raw_email)
+
+            from_addr = email.utils.parseaddr(msg.get("From", ""))[1]
+            subject   = msg.get("Subject", "")
+            body      = _extract_email_body(msg)
+
+            process_email({
+                "from_address": from_addr,
+                "subject":      subject,
+                "body":         body,
+            }, client_id=client_id)
+
+            mail.store(msg_id, "+FLAGS", "\\Seen")
+
+        except Exception as e:
+            logger.error(f"[EMAIL AGENT] IMAP msg {msg_id} error: {e}")
+
+    mail.logout()
 
 
 def _extract_email_body(msg) -> str:
@@ -550,44 +685,16 @@ def _extract_email_body(msg) -> str:
     Returns:
         Plain text body string
     """
-    body = ""
     if msg.is_multipart():
         for part in msg.walk():
-            content_type = part.get_content_type()
-            if content_type == "text/plain":
+            if part.get_content_type() == "text/plain":
                 try:
-                    body = part.get_payload(decode=True).decode("utf-8", errors="replace")
-                    break
+                    return part.get_payload(decode=True).decode("utf-8", errors="replace")
                 except Exception:
                     continue
     else:
         try:
-            body = msg.get_payload(decode=True).decode("utf-8", errors="replace")
+            return msg.get_payload(decode=True).decode("utf-8", errors="replace")
         except Exception:
-            body = ""
-    return body
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# HELPERS
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _resolve_client_from_email(to_address: str) -> str | None:
-    """Resolve client_id from the email address the message was sent to.
-
-    Each solar company client can have their own forwarding email address.
-
-    Args:
-        to_address: Email address the message was sent to
-
-    Returns:
-        client_id or None
-    """
-    try:
-        row = fetch_one(
-            "SELECT client_id FROM company_profiles WHERE email = ? AND active = 1",
-            (to_address,)
-        )
-        return row.get("client_id") if row else None
-    except Exception:
-        return None
+            pass
+    return ""

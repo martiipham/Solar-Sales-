@@ -1,238 +1,193 @@
-# System Architecture
+# Architecture — Solar Sales AI Admin System
 
-## 3-Tier Agent Hierarchy
+## System Overview
 
-```
-TIER 1 — THE GENERAL
-  master_agent.py
-  Runs every 6 hours. Owns strategy.
-  ├── Generates experiment ideas via GPT-4o (3 per cycle)
-  ├── Scores each idea: market_signal + competitive_gap + execution_speed + revenue_path
-  ├── Runs red team analysis (devil_score 1–10)
-  ├── Routes: auto_proceed (>8.5) / human_gate (5.0–8.5) / auto_kill (<5.0)
-  └── Allocates budget via Kelly Criterion → assigns bucket (exploit/explore/moonshot)
-
-TIER 2 — DEPARTMENT HEADS (run daily at 09:00 UTC)
-  research_agent.py   — manages research task queue, spawns prospect/market/competitor tasks
-  content_agent.py    — manages content task queue (ad copy, email sequences, SMS, LinkedIn)
-  analytics_agent.py  — analyses leads, experiments, budget burn; checks circuit breakers
-
-TIER 3 — WORKERS (stateless, self-terminating)
-  worker.py           — picks up next queued task, executes it, posts pheromone signal, exits
-  qualification_agent — scores solar leads 1–10 via GPT-4o or rule-based fallback
-  proposal_agent      — generates 3-section proposals, saves to proposals/
-  solar_research_agent — profiles solar companies for outreach
-  report_agent        — weekly client performance reports, saves to reports/
-  red_team_agent      — devil's advocate analysis of experiment ideas
-
-SUPPORT AGENTS
-  scout_agent.py      — daily 08:00 UTC, discovers new solar company prospects
-  mutation_engine.py  — Monday 22:30 UTC, evolves underperforming experiments via GPT-4o
-  ab_tester.py        — daily 10:00 UTC, evaluates running A/B tests for winners
-```
-
----
-
-## Capital Allocation Flow
+Single Python process (`main.py`) running four Flask API servers on separate threads,
+with APScheduler managing recurring background jobs. All state is stored in a local
+SQLite database. The React dashboard (`swarm-board/`) reads from the Dashboard API.
 
 ```
-confidence_score (0–10)
-        │
-        ▼
-  score_experiment()        ← market_signal, competitive_gap, execution_speed, revenue_path
-        │
-        ▼
-  red_team_analyse()        ← devil_score (1–10)
-  adjust_confidence()       ← if devil_score > 6: confidence -= (devil_score - 6) × 0.5
-        │
-        ▼
-  routing decision:
-    > 8.5  → auto_proceed
-    5.0–8.5 → human_gate  (Slack alert sent, approval required)
-    < 5.0  → auto_kill
-        │
-        ▼
-  calculate_budget()        ← 25% fractional Kelly
-    p = 0.2 + (confidence/10 × 0.65)    # win probability
-    f* = (b×p - q) / b                   # full Kelly (b=3.0 default)
-    f_actual = f* × 0.25                 # 25% fractional
-    budget = f_actual × WEEKLY_BUDGET_AUD
-        │
-        ▼
-  assign_bucket()
-    devil ≥ 7 AND confidence ≥ 7 → moonshot
-    confidence ≥ 8 AND devil < 5 → exploit
-    otherwise                    → explore
-        │
-        ▼
-  can_allocate()            ← checks bucket remaining vs requested amount
-        │
-        ▼
-  INSERT experiments        ← status: approved / pending
-        │
-        ▼
-  circuit_breaker check     ← after each General cycle
-```
-
-**Budget Buckets (of WEEKLY_BUDGET_AUD):**
-
-| Bucket | Allocation | Purpose |
-|--------|-----------|---------|
-| exploit | 60% | Scaling proven winners |
-| explore | 30% | 72-hour test experiments |
-| moonshot | 10% | High-risk, high-reward ideas |
-
----
-
-## Memory System
-
-### Hot Memory — SQLite (`swarm.db`)
-
-Sub-second access to live state. All agents read/write directly.
-
-- `get_active_experiments()` — experiments with status `approved` or `running`
-- `get_pending_experiments()` — awaiting human approval
-- `get_budget_used_this_week()` — SUM of budget_allocated, last 7 days
-- `get_consecutive_failures()` — current failure streak from experiments table
-- `enqueue_task()` / `get_next_task()` — task queue operations
-- `post_pheromone()` / `get_active_pheromones()` — signal tracking
-- `apply_pheromone_decay()` — 50% weight loss per day after 7 days
-- `get_circuit_breaker_state()` — most recent unresolved circuit_breaker_log row
-
-### Warm Memory — JSON files (`memory/knowledge/`)
-
-Richer structured records for pattern recognition. Slower than SQLite.
-
-| File | Content |
-|------|---------|
-| `experiments.json` | All completed experiment outcomes (status, revenue, ROI, learnings) |
-| `learnings.json` | Actionable insights from past experiments, sorted by confidence |
-| `verticals.json` | Market intelligence per vertical (solar_australia, etc.) |
-
-Key functions: `save_experiment_outcome()`, `save_learning()`, `get_winning_patterns()`, `get_all_learnings()`, `get_vertical_knowledge()`.
-
-### Cold Ledger — Append-only SQLite (`cold_ledger` table)
-
-Every significant decision is written here and **never updated or deleted**. It is the system's audit trail.
-
-Event types written to the ledger:
-
-| Event Type | Trigger |
-|-----------|---------|
-| `EXPERIMENT_CREATED` | General creates new experiment |
-| `EXPERIMENT_APPROVED` | Human or auto approval |
-| `EXPERIMENT_KILLED` | Auto-kill or rejection |
-| `CIRCUIT_BREAKER_YELLOW/ORANGE/RED` | Threshold breach |
-| `LEAD_QUALIFIED` | Qualification agent scores a lead |
-| `PHEROMONE_SIGNAL` | Worker posts a signal |
-| `RED_TEAM_ANALYSIS` | Red team analysis completed |
-| `RESEARCH_CYCLE` | Research department head run |
-| `ANALYTICS_CYCLE` | Analytics department head run |
-| `VOICE_CALL_COMPLETE` | Post-call processor finishes |
-| `MUTATION_CYCLE` | Mutation engine completes |
-
----
-
-## Message Bus Design
-
-File: `bus/message_bus.py` — backed by the `message_bus` SQLite table.
-
-All inter-agent communication goes through this bus. No direct agent-to-agent calls.
-
-**Priority order:** `CRITICAL` → `HIGH` → `NORMAL` → `LOW`
-
-**Message types:**
-
-| Type | Purpose |
-|------|---------|
-| `TASK` | Request another agent to do work |
-| `REPORT` | Return results of completed work |
-| `ALERT` | Urgent notification requiring attention |
-| `ACK` | Acknowledge receipt of a `requires_ack` message |
-| `KILL` | Instruct agent to stop current work |
-| `QUERY` | Request information |
-| `RESPONSE` | Response to a QUERY |
-
-**Message lifecycle:** `queued` → `processing` → `complete` / `failed` / `expired`
-
-Messages expire after 6 hours if unread (`expire_old_messages()` runs every 6 hours via scheduler).
-
-**Key functions:**
-
-```python
-bus.post(from_agent, to_queue, msg_type, payload, priority, ttl_cycles)
-bus.receive(queue_name, msg_type=None)       # fetch + mark processing
-bus.receive_all(queue_name, limit=20)        # drain queue
-bus.complete(msg_id)
-bus.fail(msg_id, reason)
-bus.ack(original_msg_id, from_agent)
-bus.queue_depth(queue_name)                  # counts per status
+┌─────────────────────────────────────────────────────────────┐
+│                     main.py (single process)                 │
+│                                                              │
+│  ┌──────────────┐  ┌──────────────┐  ┌────────────────────┐ │
+│  │ :5000        │  │ :5001        │  │ :5002              │ │
+│  │ Human Gate   │  │ GHL Webhooks │  │ Voice AI Webhook   │ │
+│  │ (approvals)  │  │ (leads,      │  │ (Retell call       │ │
+│  │              │  │  emails,     │  │  events)           │ │
+│  │              │  │  stage chg)  │  │                    │ │
+│  └──────────────┘  └──────────────┘  └────────────────────┘ │
+│                                                              │
+│  ┌──────────────┐  ┌──────────────────────────────────────┐ │
+│  │ :5003        │  │ APScheduler                          │ │
+│  │ Dashboard    │  │  • crm_sync      every 30 min        │ │
+│  │ API          │  │  • lead_check    every 60 min        │ │
+│  └──────────────┘  └──────────────────────────────────────┘ │
+│                                                              │
+│  ┌────────────────────────────────────────────────────────┐ │
+│  │                  SQLite  (solar_admin.db)               │ │
+│  │  leads · call_logs · email_logs · proposals            │ │
+│  │  company_profiles · crm_cache · settings · users       │ │
+│  └────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────┘
+         ▲                    ▲
+         │                    │
+  React Dashboard       External APIs
+  swarm-board/          (GHL, Retell, OpenAI, Slack)
+  :5173 (dev)
 ```
 
 ---
 
-## Data Flow Diagram
+## Data Flows
+
+### 1. Inbound Call → Lead Qualified
 
 ```
-External World
-      │
-      ├── GHL Webhook (new lead) ──────────────────────────────┐
-      │                                                         │
-      ├── Retell AI (inbound call) ──────────────────────────┐  │
-      │                                                       │  │
-      └── Web Scraper / API Poller / Social Signal ─────┐    │  │
-                                                         │    │  │
-                                                         ▼    ▼  ▼
-                                               ┌─────────────────────┐
-                                               │   SQLite (swarm.db) │
-                                               │                     │
-                                               │  collected_data     │
-                                               │  leads              │
-                                               │  call_logs          │
-                                               │  message_bus        │
-                                               │  experiments        │
-                                               │  pheromone_signals  │
-                                               │  kg_entities        │
-                                               │  crm_cache          │
-                                               └──────────┬──────────┘
-                                                          │
-                    ┌─────────────────────────────────────┤
-                    │                                     │
-                    ▼                                     ▼
-          ┌──────────────────┐                 ┌─────────────────────┐
-          │  APScheduler     │                 │  Flask APIs          │
-          │  (master_agent,  │                 │  :5000 human_gate   │
-          │   scout_agent,   │                 │  :5001 ghl_handler  │
-          │   analytics, etc)│                 │  :5002 voice_ai     │
-          └──────────────────┘                 │  :5003 dashboard    │
-                    │                          └──────────┬──────────┘
-                    │                                     │
-                    ▼                                     ▼
-          ┌──────────────────┐                 ┌─────────────────────┐
-          │  OpenAI GPT-4o   │                 │  Swarm Board        │
-          │  (generation,    │                 │  React :5173        │
-          │   scoring, etc)  │                 └─────────────────────┘
-          └──────────────────┘
+Caller dials client's number
+        │
+        ▼
+Retell AI (cloud) ──── POST /voice/call-started ────▶ :5002
+                                                        │
+                                        voice/call_handler.py
+                                        • loads company KB
+                                        • GPT-4o drives conversation
+                                        • functions: qualify, book, transfer
+                                        │
+                                        POST /voice/call-ended
+                                        │
+                                        voice/post_call.py
+                                        • saves transcript to call_logs
+                                        • calls qualification_agent.qualify()
+                                        │
+                                        qualification_agent.py
+                                        • GPT-4o or rule-based score 1–10
+                                        • score ≥ 7 → call_now
+                                        • score ≥ 8 → Slack HOT LEAD alert
+                                        • writes leads.score + recommended_action
+                                        │
+                                        GHL API update (pipeline stage)
+```
+
+### 2. Inbound Email → Human Approved Reply
+
+```
+Customer sends email
+        │
+        ▼
+GoHighLevel receives → POST /webhook/inbound-message ──▶ :5001
+                                                           │
+                                           email_processing/email_agent.py
+                                           • GPT-4o classifies: intent, urgency
+                                           • drafts reply using company KB
+                                           • low urgency → auto-queue (15min delay)
+                                           • high urgency → POST to :5000/approve
+                                           │
+                                   :5000 Human Gate
+                                   • operator reviews draft in swarm board
+                                   • approves or edits → GHL send API
+                                   • action logged to email_logs
+```
+
+### 3. New Lead (Web Form) → Proposal Generated
+
+```
+Lead submits form on GHL funnel
+        │
+        ▼
+GHL webhook → POST /webhook/new-lead ──▶ :5001
+                                          │
+                              webhooks/ghl_handler.py
+                              • creates lead record in SQLite
+                              • calls qualification_agent.qualify()
+                              │
+                      score ≥ 7?
+                      ├── YES → proposal_agent.generate_from_lead()
+                      │         • calculates system size, savings, STC rebate
+                      │         • renders HTML email proposal
+                      │         • saves to proposals table
+                      └── NO  → nurture or disqualify action logged
+                              │
+                      score ≥ 8?
+                      └── YES → Slack HOT LEAD alert (masked PII)
+```
+
+### 4. CRM Sync (Scheduled)
+
+```
+APScheduler fires every 30 minutes
+        │
+        ▼
+api/crm_sync.py
+• GHL API → GET /contacts (recent 50)
+• GHL API → GET /pipelines (stage counts)
+• writes to crm_cache table
+• logs run to agent_run_log
+        │
+        ▼
+Dashboard API serves crm_cache to swarm board
 ```
 
 ---
 
-## Scheduler Job Table
+## Scheduler Jobs
 
-All times are UTC. Configured in `main.py` `setup_scheduler()`.
+| Job ID | Interval | What it does |
+|--------|----------|-------------|
+| `crm_sync` | Every 30 min | Pull contacts + pipeline from GHL into SQLite cache |
+| `lead_check` | Every 60 min | Re-score unqualified leads older than 1 hour |
 
-| Job ID | Trigger | What it does |
-|--------|---------|-------------|
-| `general` | Every 6h | The General's strategic planning cycle: generate ideas, score, route, allocate |
-| `department_heads` | Daily 09:00 | Run research_agent, content_agent, analytics_agent in sequence |
-| `retrospective` | Monday 22:00 | Weekly retrospective: analyse last 7 days, save learnings to warm memory |
-| `pheromone_decay` | Daily 00:00 | Apply 50% decay to pheromone signals older than 7 days |
-| `scout_agent` | Daily 08:00 | Discover new solar company prospects from scraped data and social signals |
-| `research_engine` | Daily 06:00 | Research orchestrator processes queued research tasks |
-| `data_collection` | Every 4h | Web scraper, API poller, social signal, price monitor collect fresh data |
-| `pipeline_processor` | Every 4h (+30min offset) | Deduplicate, enrich, and route signals from collected_data to message bus |
-| `ab_evaluator` | Daily 10:00 | Check running A/B tests; declare winners where sample size is sufficient |
-| `mutation_engine` | Monday 22:30 | Evolve underperforming experiments via GPT-4o; kill fatally bad ones |
-| `explore_monitor` | Every 2h | Drive 72-hour explore protocol lifecycle; auto-kill expired experiments |
-| `bus_expiry` | Every 6h | Expire stale messages on the message bus (>6h old queued messages) |
-| `crm_sync` | Every 30min | Pull live CRM data into `crm_cache` table; update board-state.json |
+---
+
+## Database Schema (Active Tables)
+
+See [memory-database.md](memory-database.md) for full column reference.
+
+| Table | Purpose |
+|-------|---------|
+| `leads` | Inbound prospects — qualification score, recommended action, proposal link |
+| `call_logs` | Every AI voice call — transcript, duration, lead score, outcome |
+| `email_logs` | Every inbound email — intent, urgency, draft reply, approval status |
+| `proposals` | Generated solar proposals — system size, savings, STC rebate, HTML content |
+| `company_profiles` | One row per solar SME client — KB config, voice agent ID, GHL location |
+| `company_products` | Products/services offered by the client (for KB) |
+| `company_faqs` | FAQ pairs used by the voice agent and email drafter |
+| `company_objections` | Objection handling scripts for the voice agent |
+| `crm_cache` | Key-value store for GHL pipeline and contact data (30-min refresh) |
+| `settings` | Runtime config overrides — editable from the dashboard |
+| `api_keys` | Keys for client embed widgets and webhook authentication |
+| `users` | Dashboard user accounts (owner, admin, client roles) |
+| `auth_tokens` | JWT revocation list |
+| `agent_run_log` | Scheduler job run history — job_id, ran_at, status, notes |
+| `api_usage` | Per-call OpenAI and Retell API cost tracking |
+
+---
+
+## API Servers
+
+| Port | Module | Key Endpoints |
+|------|--------|---------------|
+| 5000 | `api/human_gate.py` | `GET /pending`, `POST /approve/<id>`, `POST /reject/<id>` |
+| 5001 | `webhooks/ghl_handler.py` | `POST /webhook/new-lead`, `/webhook/inbound-message`, `/webhook/stage-change` |
+| 5002 | `voice/call_handler.py` | `POST /voice/call-started`, `POST /voice/response`, `POST /voice/call-ended` |
+| 5003 | `api/dashboard_api.py` | `GET /api/dashboard/summary`, `/api/leads`, `/api/calls`, `/api/agents/status` |
+
+---
+
+## Key Modules
+
+| File | Responsibility |
+|------|---------------|
+| `config.py` | Loads all env vars, exposes `is_configured()`, `retell_configured()` |
+| `memory/database.py` | SQLite schema + CRUD helpers: `insert`, `update`, `fetch_one`, `fetch_all` |
+| `memory/hot_memory.py` | Fast in-process cache for frequently read data |
+| `knowledge/company_kb.py` | Loads company profile, products, FAQs, and objections for a given client |
+| `agents/qualification_agent.py` | Lead scoring 1–10 via GPT-4o or rule-based fallback |
+| `agents/proposal_agent.py` | Solar installation proposal generation (system size, STC, savings, HTML) |
+| `voice/call_handler.py` | Retell webhook handler — conversation loop, function dispatch |
+| `voice/call_functions.py` | Functions called during a voice call (qualify, book, CRM update) |
+| `voice/post_call.py` | Post-call processing — transcript analysis, lead update, cost logging |
+| `email_processing/email_agent.py` | Email classification, reply drafting, approval queue |
+| `api/crm_sync.py` | GHL data pull and SQLite cache writer |
+| `integrations/ghl_client.py` | GHL REST API wrapper |
+| `notifications/slack_notifier.py` | Slack webhook alerts for hot leads, errors, approvals |

@@ -25,46 +25,47 @@ const C = {
 const h = (col, a) => col + Math.round(a * 255).toString(16).padStart(2, "0");
 
 const TIPS = {
-  "budget.weekly_aud":         "Total AUD budget available per week across all experiments.",
-  "budget.max_single_bet_pct": "Maximum fraction of the weekly budget for any single experiment (Kelly cap).",
-  "confidence.auto_proceed":   "Experiments scoring above this (0–10) are auto-approved without human review.",
-  "confidence.human_gate":     "Experiments between this and auto_proceed are queued for human approval.",
-  "confidence.auto_kill":      "Experiments scoring below this are automatically rejected.",
-  "kelly.fractional":          "Fractional Kelly multiplier. 0.25 = bet 25% of the full Kelly fraction, reducing risk.",
-  "breaker.yellow_failures":   "Number of consecutive experiment failures before a Yellow (warning) alert fires.",
-  "breaker.orange_burn_rate":  "Budget burn rate multiplier (e.g. 1.5 = 150% of planned spend) that triggers Orange.",
-  "breaker.red_failures":      "Consecutive failures that trigger Red — all agent activity halts immediately.",
-  "breaker.red_single_loss_pct": "A single experiment loss exceeding this fraction of weekly budget triggers Red.",
-  "portfolio.exploit_pct":     "Share of budget allocated to proven, low-risk strategies (exploit bucket).",
-  "portfolio.explore_pct":     "Share of budget allocated to new, unproven strategies (explore bucket).",
-  "portfolio.moonshot_pct":    "Share of budget allocated to high-risk, high-reward experiments.",
-  "crm.sync_interval_min":     "How often the CRM cache is refreshed from GoHighLevel/HubSpot/Salesforce.",
-  "crm.active":                "Which CRM is currently active. Options: ghl, hubspot, salesforce.",
-  "notify.slack_enabled":      "Send Slack alerts for experiment approvals, failures, and circuit breaker events.",
+  "crm.sync_interval_min":       "How often (minutes) the CRM cache is refreshed from GoHighLevel.",
+  "crm.active":                  "Which CRM is active. Currently: ghl.",
+  "notify.slack_enabled":        "Send Slack alerts for hot leads (score ≥ 8), call completions, and errors.",
+  "notify.hot_lead_threshold":   "Minimum lead score (1–10) that triggers a Slack HOT LEAD alert.",
+  "voice.enabled":               "Enable the Retell AI voice receptionist for inbound and outbound calls.",
+  "voice.outbound_enabled":      "Automatically fire an outbound call to hot leads after qualification.",
+  "voice.transfer_threshold":    "Lead score at which the AI transfers the call to a human sales rep.",
+  "agents.qualification_enabled": "Run lead qualification automatically when a new lead arrives via webhook.",
+  "agents.proposal_enabled":     "Automatically generate a solar proposal after a lead is qualified.",
+  "email.agent_enabled":         "Master on/off switch. When OFF, no inbound emails are processed.",
+  "email.auto_send_enabled":     "When ON, emails scoring above the threshold are sent automatically without review.",
+  "email.auto_send_threshold":   "Urgency score (1-10) required to trigger auto-send. Default 9 (rarely fires).",
+  "email.auto_discard_spam":     "Auto-discard emails classified as SPAM without showing them in the queue.",
+  "email.imap_poll_interval":    "Seconds between inbox checks for direct IMAP (Gmail/Outlook). Set to 0 to disable.",
+  "email.reply_prompt":          "Custom AI instructions appended to every draft reply prompt. Describe tone, sign-off, and anything to always mention.",
+  "agents.email_enabled":        "Enable the email processor to triage and draft replies to inbound emails.",
+  "schedule.crm_sync_min":       "Interval (minutes) between CRM sync runs. Default: 30.",
 };
 
 const CATEGORY_LABELS = {
-  budget:    "💰 Budget",
-  confidence: "🎯 Confidence Routing",
-  capital:   "📐 Kelly Capital",
-  circuit:   "🔴 Circuit Breaker",
-  portfolio: "📊 Portfolio Allocation",
-  schedule:  "🕐 Scheduler",
-  crm:       "🔗 CRM",
-  notify:    "🔔 Notifications",
+  voice:    "🎙️ Voice AI",
+  agents:   "🤖 Agent Toggles",
+  crm:      "🔗 CRM Sync",
+  notify:   "🔔 Notifications",
+  schedule: "🕐 Scheduler",
+  email:    "✉️ Email Processing",
 };
 
 function SettingRow({ keyName, value, description, onChange }) {
   const tip = TIPS[keyName];
-  const isBool = value === "true" || value === "false";
-  const isNum  = !isNaN(Number(value)) && !isBool;
+  const isBool     = value === "true" || value === "false";
+  const isNum      = !isNaN(Number(value)) && !isBool && value !== "";
+  const isTextarea = keyName === "email.reply_prompt";
 
   return (
     <div style={{
-      display: "flex", alignItems: "center",
+      display: "flex", alignItems: isTextarea ? "flex-start" : "center",
+      flexDirection: isTextarea ? "column" : "row",
       padding: "12px 16px",
       borderBottom: `1px solid ${C.border}`,
-      gap: 16,
+      gap: isTextarea ? 10 : 16,
     }}>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
@@ -89,6 +90,20 @@ function SettingRow({ keyName, value, description, onChange }) {
           >
             {value === "true" ? "ON" : "OFF"}
           </button>
+        ) : isTextarea ? (
+          <textarea
+            defaultValue={value}
+            rows={4}
+            onBlur={e => { if (e.target.value !== value) onChange(keyName, e.target.value); }}
+            placeholder="e.g. Always mention our 10-year warranty. Sign off as 'The SunPower Team'."
+            style={{
+              background: C.card, border: `1px solid ${C.border}`,
+              color: C.text, borderRadius: 8, padding: "8px 12px",
+              fontSize: 13, width: "100%", resize: "vertical",
+              fontFamily: "inherit", lineHeight: 1.55, outline: "none",
+              boxSizing: "border-box",
+            }}
+          />
         ) : (
           <input
             type={isNum ? "number" : "text"}

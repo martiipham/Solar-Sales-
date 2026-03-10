@@ -12,7 +12,7 @@ Returns: score (1-10), reason (2 sentences), recommended_action
 import json
 import logging
 from datetime import datetime
-from memory.database import update
+from memory.database import update, fetch_one
 from notifications.slack_notifier import alert_new_lead, alert_high_value_lead
 import config
 
@@ -192,10 +192,41 @@ def _format_lead(lead_data: dict) -> str:
     return "\n".join(fields)
 
 
+def qualify_from_call(call_id: str) -> dict:
+    """Read extracted call data from leads table and run qualification scoring.
+
+    Args:
+        call_id: Retell/voice call ID linked to a lead record
+
+    Returns:
+        Qualification result dict, or error dict if lead not found
+    """
+    lead = fetch_one("SELECT * FROM leads WHERE call_id = ?", (call_id,))
+    if not lead:
+        logger.warning(f"[QUALIFICATION] No lead found for call_id={call_id}")
+        return {"error": f"No lead found for call_id={call_id}"}
+
+    lead_data = {
+        "name": lead.get("name"),
+        "homeowner_status": lead.get("homeowner_status") or lead.get("homeowner"),
+        "monthly_bill": lead.get("monthly_bill"),
+        "roof_type": lead.get("roof_type"),
+        "roof_age": lead.get("roof_age"),
+        "suburb": lead.get("suburb"),
+        "state": lead.get("state"),
+        "email": lead.get("email"),
+        "phone": lead.get("phone"),
+    }
+
+    print(f"[QUALIFICATION] qualify_from_call: call_id={call_id}, lead_id={lead['id']}")
+    return qualify(lead_data, lead_id=lead["id"])
+
+
 def _save_to_lead(lead_id: int, result: dict):
     """Update the lead record with qualification results."""
     update("leads", lead_id, {
         "qualification_score": result.get("score"),
+        "score": result.get("score"),
         "score_reason": result.get("reason"),
         "recommended_action": result.get("recommended_action"),
         "status": "qualified",
