@@ -535,10 +535,30 @@ function LeadsPage() {
 
   const handleMarkCalled = async (lead) => {
     try {
-      await apiFetch(`/api/leads/${lead.id}/mark-called`, { method: "POST" });
-      toast.success("Lead marked as called");
-      load();
+      const r = await apiFetch(`/api/leads/${lead.id}/status`, {
+        method: "PATCH",
+        body: JSON.stringify({ status: "called" }),
+      });
+      if (r.ok) {
+        toast.success("Lead marked as called");
+        setLeads(prev => prev.map(x => x.id === lead.id ? { ...x, status: "called" } : x));
+        setExpanded(null);
+      } else toast.error("Failed to update lead");
     } catch { toast.error("Failed to update lead"); }
+  };
+
+  const handleCloseLead = async (lead) => {
+    try {
+      const r = await apiFetch(`/api/leads/${lead.id}/status`, {
+        method: "PATCH",
+        body: JSON.stringify({ status: "closed" }),
+      });
+      if (r.ok) {
+        toast.success("Lead closed");
+        setLeads(prev => prev.map(x => x.id === lead.id ? { ...x, status: "closed" } : x));
+        setExpanded(null);
+      } else toast.error("Failed to close lead");
+    } catch { toast.error("Failed to close lead"); }
   };
 
   const FILTER_OPTS = ["all", "call_now", "nurture", "disqualify"];
@@ -690,6 +710,7 @@ function LeadsPage() {
                   <div style={{ display: "flex", flexDirection: "column", gap: 8, justifyContent: "flex-end" }}>
                     <Btn variant="solid" onClick={() => handleProposal(lead)}>Generate Proposal</Btn>
                     <Btn onClick={() => handleMarkCalled(lead)}>Mark Called</Btn>
+                    <Btn variant="ghost" onClick={() => handleCloseLead(lead)}>Close Lead</Btn>
                   </div>
                 </div>
               )}
@@ -1328,16 +1349,16 @@ function ReportingPage() {
   const bookRate = stats?.this_week?.booking_rate || 0;
   const bookings = Math.round(total * (bookRate / 100));
 
-  const MOCK_BARS = [
-    { day: "Mon", calls: 12, leads: 4 },
-    { day: "Tue", calls: 18, leads: 7 },
-    { day: "Wed", calls: 9,  leads: 3 },
-    { day: "Thu", calls: 22, leads: 9 },
-    { day: "Fri", calls: 15, leads: 5 },
-    { day: "Sat", calls: 6,  leads: 2 },
-    { day: "Sun", calls: 3,  leads: 1 },
-  ];
-  const maxCalls = Math.max(...MOCK_BARS.map(b => b.calls));
+  const [chartData, setChartData] = useState([]);
+
+  useEffect(() => {
+    apiFetch("/api/reports/daily-activity")
+      .then(r => r.json())
+      .then(d => setChartData(d.days || []))
+      .catch(() => {});
+  }, [apiFetch]);
+
+  const maxCalls = chartData.length > 0 ? Math.max(...chartData.map(b => b.calls || 0)) : 1;
 
   return (
     <div style={{ flex: 1, overflow: "auto", padding: "28px 32px" }}>
@@ -1350,24 +1371,30 @@ function ReportingPage() {
       </div>
 
       <Card style={{ marginBottom: 20 }}>
-        <CardHeader title="Call Volume — This Week" sub="Illustrative trend (live data coming soon)" />
+        <CardHeader title="Call Volume — This Week" sub="Daily activity from live data" />
         <div style={{ padding: "24px 20px" }}>
-          <div style={{ display: "flex", alignItems: "flex-end", gap: 12, height: 120 }}>
-            {MOCK_BARS.map(bar => (
-              <div key={bar.day} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
-                <div style={{
-                  width: "100%", background: a(T.accent, 0.7),
-                  height: `${(bar.calls / maxCalls) * 100}px`,
-                  borderRadius: "4px 4px 0 0",
-                  display: "flex", alignItems: "flex-start", justifyContent: "center",
-                  paddingTop: 4,
-                }}>
-                  <span style={{ fontSize: 10, color: T.white, fontFamily: "'JetBrains Mono', monospace" }}>{bar.calls}</span>
+          {chartData.length === 0 ? (
+            <div style={{ height: 120, display: "flex", alignItems: "center", justifyContent: "center", color: T.muted, fontSize: 13 }}>
+              No activity data yet
+            </div>
+          ) : (
+            <div style={{ display: "flex", alignItems: "flex-end", gap: 12, height: 120 }}>
+              {chartData.map(bar => (
+                <div key={bar.day} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+                  <div style={{
+                    width: "100%", background: a(T.accent, 0.7),
+                    height: `${((bar.calls || 0) / maxCalls) * 100}px`,
+                    borderRadius: "4px 4px 0 0",
+                    display: "flex", alignItems: "flex-start", justifyContent: "center",
+                    paddingTop: 4,
+                  }}>
+                    <span style={{ fontSize: 10, color: T.white, fontFamily: "'JetBrains Mono', monospace" }}>{bar.calls}</span>
+                  </div>
+                  <span style={{ fontSize: 10, color: T.muted }}>{bar.day}</span>
                 </div>
-                <span style={{ fontSize: 10, color: T.muted }}>{bar.day}</span>
-              </div>
-            ))}
-          </div>
+              ))}
+            </div>
+          )}
         </div>
       </Card>
 

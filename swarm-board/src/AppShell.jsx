@@ -12,6 +12,7 @@
  */
 import { useState, useEffect } from "react";
 import { useAuth } from "./AuthContext";
+import LoginScreen from "./LoginScreen";
 import AdminDashboard from "./pages/AdminDashboard";
 import ClientDashboard from "./pages/ClientDashboard";
 
@@ -93,7 +94,7 @@ export default function AppShell() {
   };
 
   if (loading) return <LoadingScreen />;
-  if (!user)   return <ClientDashboard />;  // DEMO: skip login — revert to <LoginScreen /> for production
+  if (!user)   return <LoginScreen />;
 
   const role       = user.role;
   const activePage = (page && canAccess(role, page)) ? page : "overview";

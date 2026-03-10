@@ -20,6 +20,7 @@ Endpoints:
 import json
 import logging
 import os
+import threading
 from datetime import datetime
 
 from flask import Flask, jsonify, request
@@ -536,6 +537,127 @@ def leads_list():
     except Exception as e:
         logger.error(f"[DASH API] leads error: {e}")
         return jsonify({"error": "Internal server error", "leads": []}), 500
+
+
+# ── Lead status update ───────────────────────────────────────────────────────
+
+@dashboard_app.route("/api/leads/<int:lead_id>/status", methods=["PATCH"])
+def update_lead_status(lead_id):
+    """Update a lead's status field.
+
+    Body: { "status": "new" | "contacted" | "called" | "converted" | "nurture" | "closed" }
+    """
+    data   = request.get_json(force=True) or {}
+    status = str(data.get("status", "")).strip()
+    if not status:
+        return jsonify({"error": "status is required"}), 400
+    VALID = {"new", "contacted", "called", "converted", "nurture", "closed"}
+    if status not in VALID:
+        return jsonify({"error": f"Invalid status. Must be one of: {', '.join(sorted(VALID))}"}), 400
+    try:
+        from memory.database import get_conn
+        with get_conn() as conn:
+            conn.execute("UPDATE leads SET status = ? WHERE id = ?", (status, lead_id))
+        logger.info(f"[LEADS API] Lead {lead_id} status → {status}")
+        return jsonify({"ok": True, "lead_id": lead_id, "status": status}), 200
+    except Exception as e:
+        logger.error(f"[LEADS API] update_lead_status error: {e}")
+        return jsonify({"error": "Internal server error"}), 500
+
+
+# ── Trigger proposal generation ───────────────────────────────────────────────
+
+@dashboard_app.route("/api/leads/<int:lead_id>/proposal", methods=["POST"])
+def trigger_proposal(lead_id):
+    """Trigger proposal generation for a lead in a background thread.
+
+    Returns 202 immediately; generation runs async.
+    """
+    try:
+        lead = fetch_one("SELECT * FROM leads WHERE id = ?", (lead_id,))
+        if not lead:
+            return jsonify({"error": "Lead not found"}), 404
+
+        def _run():
+            try:
+                from agents.proposal_agent import generate_from_lead
+                generate_from_lead(lead_id)
+            except Exception as ex:
+                logger.error(f"[PROPOSAL] background error for lead {lead_id}: {ex}")
+
+        threading.Thread(target=_run, daemon=True).start()
+        logger.info(f"[LEADS API] Proposal generation started for lead {lead_id}")
+        return jsonify({"ok": True, "message": "Proposal generation started", "lead_id": lead_id}), 202
+    except Exception as e:
+        logger.error(f"[LEADS API] trigger_proposal error: {e}")
+        return jsonify({"error": "Internal server error"}), 500
+
+
+# ── Email approval (re-exposed from human_gate on dashboard port) ─────────────
+
+@dashboard_app.route("/gate/email-approve", methods=["POST"])
+def dashboard_email_approve():
+    """Approve, edit, or discard a pending email draft.
+
+    Re-exposed on port 5003 so the Vite proxy works without hitting port 5010.
+    Body: { "email_id": int, "action": "send" | "edit" | "discard", "edited_body": str }
+    """
+    data = request.get_json(force=True) or {}
+    try:
+        email_id = int(data.get("email_id", 0))
+    except (TypeError, ValueError):
+        return jsonify({"error": "email_id must be an integer"}), 400
+
+    action      = str(data.get("action", "")).strip()
+    edited_body = str(data.get("edited_body", "")).strip()
+
+    if not email_id or action not in ("send", "edit", "discard"):
+        return jsonify({"error": "email_id and action (send|edit|discard) required"}), 400
+
+    try:
+        from memory.database import get_conn, update
+        row = fetch_one("SELECT * FROM emails WHERE id = ?", (email_id,))
+        if not row:
+            return jsonify({"error": f"Email #{email_id} not found"}), 404
+        if row.get("status") != "pending":
+            return jsonify({"error": f"Email #{email_id} is not pending (status={row.get('status')})"}), 400
+
+        if action == "discard":
+            update("emails", email_id, {"status": "discarded"})
+            logger.info(f"[EMAIL APPROVE] Email #{email_id} discarded")
+            return jsonify({"status": "discarded", "email_id": email_id}), 200
+
+        # send or edit
+        body_to_send = edited_body if action == "edit" and edited_body else row.get("draft_reply", "")
+        if not body_to_send:
+            return jsonify({"error": "No body to send"}), 400
+
+        if action == "edit":
+            update("emails", email_id, {"draft_reply": body_to_send})
+
+        # Try to send via GHL
+        sent = False
+        try:
+            from email_processing.email_sender import send_via_ghl
+            sent = send_via_ghl(
+                to_email=row.get("from_email", ""),
+                subject=f"Re: {row.get('subject', '')}",
+                body=body_to_send,
+                location_id=None,
+            )
+        except Exception as send_err:
+            logger.warning(f"[EMAIL APPROVE] send_via_ghl failed (non-fatal): {send_err}")
+
+        if sent:
+            update("emails", email_id, {"status": "sent"})
+            logger.info(f"[EMAIL APPROVE] Email #{email_id} sent")
+            return jsonify({"status": "sent", "email_id": email_id}), 200
+        else:
+            return jsonify({"error": "Send failed — check logs"}), 500
+
+    except Exception as e:
+        logger.error(f"[EMAIL APPROVE] error: {e}")
+        return jsonify({"error": "Internal server error"}), 500
 
 
 # ── Agent status (alias of /api/agents/config) ────────────────────────────────
