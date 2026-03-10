@@ -9,7 +9,9 @@
  */
 import { createContext, useContext, useState, useEffect, useCallback } from "react";
 
-export const API_BASE = "http://localhost:5003";
+// Empty string = relative URLs — requests go through the Vite proxy to Flask.
+// The proxy target (localhost:5003) is set in vite.config.js.
+export const API_BASE = "";
 
 const AuthContext = createContext(null);
 

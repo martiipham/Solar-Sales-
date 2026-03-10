@@ -11,8 +11,7 @@
  * Fetches from: GET /api/agents/status
  */
 import { useState, useEffect, useCallback } from "react";
-
-const API = "http://localhost:5003";
+import { useAuth } from "../AuthContext";
 
 const C = {
   bg:      "#050810",
@@ -482,6 +481,7 @@ function StatChip({ value, label, color, enabled }) {
 
 /* ─── Main page ───────────────────────────────────────────────────────────── */
 export default function AgentsPage() {
+  const { apiFetch } = useAuth();
   const [agentState,    setAgentState]    = useState({});
   const [statusData,    setStatusData]    = useState({});
   const [selectedAgent, setSelectedAgent] = useState(null);
@@ -491,7 +491,7 @@ export default function AgentsPage() {
 
   const loadStatus = useCallback(async () => {
     try {
-      const r = await fetch(`${API}/api/agents/status`, { credentials: "include" });
+      const r = await apiFetch("/api/agents/status");
       if (r.ok) {
         const data = await r.json();
         const enabled = {};
@@ -532,10 +532,8 @@ export default function AgentsPage() {
     setSaving(agent.id);
     setAgentState(prev => ({ ...prev, [agent.id]: newVal }));
     try {
-      const r = await fetch(`${API}/api/agents/status`, {
+      const r = await apiFetch("/api/agents/status", {
         method: "PATCH",
-        credentials: "include",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ agent_id: agent.id, enabled: newVal }),
       });
       if (!r.ok) throw new Error("Save failed");

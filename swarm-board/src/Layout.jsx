@@ -121,6 +121,7 @@ export default function Layout({ currentPage, onNavigate, children }) {
   const { user, logout, apiFetch } = useAuth();
   const [collapsed, setCollapsed]   = useState(false);
   const [emailBadge, setEmailBadge] = useState(0);
+  const isPreviewingClient = currentPage === "client-view";
 
   useEffect(() => {
     if (!user || (user.role === "client")) return;
@@ -245,15 +246,35 @@ export default function Layout({ currentPage, onNavigate, children }) {
               <div style={{ fontSize: 11, color: C.muted, marginBottom: 5 }}>
                 {user?.email}
               </div>
-              <span style={{
-                fontSize: 10, fontFamily: "'Syne Mono', monospace",
-                background: h(roleColor, 0.12),
-                border: `1px solid ${h(roleColor, 0.3)}`,
-                color: roleColor,
-                borderRadius: 20, padding: "1px 8px",
-              }}>
-                {role.toUpperCase()}
-              </span>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 2 }}>
+                <span style={{
+                  fontSize: 10, fontFamily: "'Syne Mono', monospace",
+                  background: h(roleColor, 0.12),
+                  border: `1px solid ${h(roleColor, 0.3)}`,
+                  color: roleColor,
+                  borderRadius: 20, padding: "1px 8px",
+                }}>
+                  {role.toUpperCase()}
+                </span>
+                {canSee(role, "admin") && (
+                  <button
+                    onClick={() => onNavigate(isPreviewingClient ? "overview" : "client-view")}
+                    title={isPreviewingClient ? "Exit client preview" : "Preview as client"}
+                    style={{
+                      fontSize: 10, fontFamily: "'Syne Mono', monospace",
+                      background: isPreviewingClient ? h(C.cyan, 0.15) : "transparent",
+                      border: `1px solid ${isPreviewingClient ? h(C.cyan, 0.4) : h(C.muted, 0.3)}`,
+                      color: isPreviewingClient ? C.cyan : C.muted,
+                      borderRadius: 20, padding: "1px 8px",
+                      cursor: "pointer", transition: "all .15s",
+                    }}
+                    onMouseEnter={e => { e.currentTarget.style.borderColor = C.cyan; e.currentTarget.style.color = C.cyan; }}
+                    onMouseLeave={e => { e.currentTarget.style.borderColor = isPreviewingClient ? h(C.cyan, 0.4) : h(C.muted, 0.3); e.currentTarget.style.color = isPreviewingClient ? C.cyan : C.muted; }}
+                  >
+                    {isPreviewingClient ? "EXIT PREVIEW" : "CLIENT VIEW"}
+                  </button>
+                )}
+              </div>
             </div>
             <button
               onClick={logout}

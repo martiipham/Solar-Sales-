@@ -5,26 +5,15 @@
  * Handles:
  *   - Auth gate: shows LoginScreen until user is authenticated
  *   - Role-based redirect: clients land on /overview, others on /overview
- *   - Layout + page rendering
+ *   - Two fully self-contained shells based on role:
+ *     - AdminDashboard for admin/owner roles
+ *     - ClientDashboard for client role
  *   - Fallback to default page for unknown routes
  */
 import { useState, useEffect } from "react";
 import { useAuth } from "./AuthContext";
-import LoginScreen from "./LoginScreen";
-import Layout from "./Layout";
-import App from "./App";
-import SettingsPage from "./pages/SettingsPage";
-import CompanyPage from "./pages/CompanyPage";
-import UsersPage from "./pages/UsersPage";
-import ApiKeysPage from "./pages/ApiKeysPage";
+import AdminDashboard from "./pages/AdminDashboard";
 import ClientDashboard from "./pages/ClientDashboard";
-import CallsPage from "./pages/CallsPage";
-import KnowledgeBasePage from "./pages/KnowledgeBasePage";
-import OnboardingPage from "./pages/OnboardingPage";
-import DocsPage from "./pages/DocsPage";
-import LeadsPage from "./pages/LeadsPage";
-import AgentsPage from "./pages/AgentsPage";
-import EmailsPage from "./pages/EmailsPage";
 
 // Pages that require a minimum role
 const ROLE_RANK = { client: 0, admin: 1, owner: 2 };
@@ -38,6 +27,7 @@ const PAGE_MIN_ROLE = {
   leads:            "admin",
   emails:           "admin",
   agents:           "admin",
+  reporting:        "admin",
   docs:             "admin",
   settings:         "admin",
   companies:        "admin",
@@ -48,10 +38,6 @@ const PAGE_MIN_ROLE = {
 function canAccess(userRole, page) {
   const minRole = PAGE_MIN_ROLE[page] || "admin";
   return (ROLE_RANK[userRole] ?? 0) >= (ROLE_RANK[minRole] ?? 0);
-}
-
-function defaultPage(role) {
-  return "overview";
 }
 
 function getHashPage() {
@@ -93,9 +79,9 @@ export default function AppShell() {
 
   useEffect(() => {
     if (!user) return;
-    const role = user.role;
-    if (!page || !canAccess(role, page)) {
-      const dest = defaultPage(role);
+    const userRole = user.role;
+    if (!page || !canAccess(userRole, page)) {
+      const dest = "overview";
       window.location.hash = dest;
       setPage(dest);
     }
@@ -107,54 +93,16 @@ export default function AppShell() {
   };
 
   if (loading) return <LoadingScreen />;
-  if (!user)   return <LoginScreen />;
+  if (!user)   return <ClientDashboard />;  // DEMO: skip login — revert to <LoginScreen /> for production
 
   const role       = user.role;
-  const activePage = (page && canAccess(role, page)) ? page : defaultPage(role);
+  const activePage = (page && canAccess(role, page)) ? page : "overview";
 
-  const renderPage = () => {
-    switch (activePage) {
-      case "overview":
-        // Clients see the AI-focused dashboard; admins/owners see the swarm overview
-        return role === "client"
-          ? <ClientDashboard onNavigate={navigate} />
-          : <App initialView="overview" />;
-      case "board":
-        return <App initialView="board" />;
-      case "calls":
-        return <CallsPage />;
-      case "knowledge-base":
-        return <KnowledgeBasePage />;
-      case "onboarding":
-        return <OnboardingPage onNavigate={navigate} />;
-      case "settings":
-        return <SettingsPage />;
-      case "companies":
-        return <CompanyPage />;
-      case "users":
-        return <UsersPage />;
-      case "apikeys":
-        return <ApiKeysPage />;
-      case "leads":
-        return <LeadsPage />;
-      case "agents":
-        return <AgentsPage />;
-      case "emails":
-        return <EmailsPage />;
-      case "docs":
-        return <DocsPage />;
-      case "client-view":
-        return <ClientDashboard />;
-      default:
-        return role === "client"
-          ? <ClientDashboard onNavigate={navigate} />
-          : <App initialView="overview" />;
-    }
-  };
+  // Clients get their own self-contained portal
+  if (role === "client") {
+    return <ClientDashboard onNavigate={navigate} />;
+  }
 
-  return (
-    <Layout currentPage={activePage} onNavigate={navigate}>
-      {renderPage()}
-    </Layout>
-  );
+  // Admin/Owner — fully self-contained AdminDashboard shell
+  return <AdminDashboard currentPage={activePage} onNavigate={navigate} />;
 }

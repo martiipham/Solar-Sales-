@@ -3,6 +3,7 @@
 Endpoint:
   GET /api/reports/monthly    — current month stats vs prior month
   GET /api/reports/summary    — all-time headline numbers
+  GET /api/reports/weekly     — daily breakdown for the past N days (default 30)
 """
 
 import logging
@@ -180,6 +181,87 @@ def all_time_summary():
 
     except Exception as e:
         logger.error(f"[REPORTS API] summary error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@reports_bp.route("/api/reports/weekly", methods=["GET"])
+@require_auth()
+def weekly_trend():
+    """Return daily call and lead counts for the past N days.
+
+    Query params:
+        days: Look-back window in days (default 30, max 90)
+
+    Response:
+        days:   list of {date, calls, leads, hot_leads, conversions}
+        totals: summed values across the window
+    """
+    try:
+        days = min(int(request.args.get("days", 30)), 90)
+    except (TypeError, ValueError):
+        days = 30
+
+    try:
+        # Build a date series using a recursive CTE so days with zero activity appear
+        rows_calls = fetch_all(
+            "SELECT date(started_at) AS day, COUNT(*) AS calls "
+            "FROM call_logs "
+            "WHERE started_at >= date('now', ? || ' days') "
+            "GROUP BY day",
+            (f"-{days}",),
+        )
+        rows_leads = fetch_all(
+            "SELECT date(created_at) AS day, "
+            "COUNT(*) AS leads, "
+            "SUM(CASE WHEN qualification_score >= 7 THEN 1 ELSE 0 END) AS hot_leads, "
+            "SUM(CASE WHEN status = 'converted' THEN 1 ELSE 0 END) AS conversions "
+            "FROM leads "
+            "WHERE created_at >= date('now', ? || ' days') "
+            "GROUP BY day",
+            (f"-{days}",),
+        )
+
+        # Index by date for merge
+        calls_map = {r["day"]: r["calls"] for r in rows_calls}
+        leads_map = {
+            r["day"]: {
+                "leads": r["leads"],
+                "hot_leads": r["hot_leads"] or 0,
+                "conversions": r["conversions"] or 0,
+            }
+            for r in rows_leads
+        }
+
+        # Produce full date range
+        from datetime import date, timedelta as td
+        today = date.today()
+        result_days = []
+        totals = {"calls": 0, "leads": 0, "hot_leads": 0, "conversions": 0}
+
+        for i in range(days - 1, -1, -1):
+            d = (today - td(days=i)).isoformat()
+            calls = calls_map.get(d, 0)
+            ld    = leads_map.get(d, {"leads": 0, "hot_leads": 0, "conversions": 0})
+            result_days.append({
+                "date":        d,
+                "calls":       calls,
+                "leads":       ld["leads"],
+                "hot_leads":   ld["hot_leads"],
+                "conversions": ld["conversions"],
+            })
+            totals["calls"]       += calls
+            totals["leads"]       += ld["leads"]
+            totals["hot_leads"]   += ld["hot_leads"]
+            totals["conversions"] += ld["conversions"]
+
+        return jsonify({
+            "window_days": days,
+            "days":        result_days,
+            "totals":      totals,
+        }), 200
+
+    except Exception as e:
+        logger.error(f"[REPORTS API] weekly_trend error: {e}")
         return jsonify({"error": str(e)}), 500
 
 

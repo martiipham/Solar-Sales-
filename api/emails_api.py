@@ -5,6 +5,7 @@ Blueprint: emails_bp
   GET  /api/emails/stats        — pending/sent/today counts (used for nav badge)
   GET  /api/emails/<id>         — single email with full body
   POST /api/emails/bulk-discard — discard multiple pending emails
+  POST /gate/email-approve      — approve, edit, or discard a pending draft
 """
 
 import logging
@@ -128,6 +129,90 @@ def get_email(email_id: int):
     except Exception as e:
         logger.error(f"[EMAILS API] get_email error: {e}")
         return jsonify({"error": "Internal server error"}), 500
+
+
+@emails_bp.route("/gate/email-approve", methods=["POST"])
+@require_auth(roles=["owner", "admin"])
+def email_approve():
+    """Approve, edit, or discard a pending email draft.
+
+    This endpoint is proxied from the React frontend via Vite's /gate/* proxy rule
+    which targets the Dashboard API. Auth is handled by the before_request JWT guard.
+
+    Request body:
+        email_id:    int  — id in the emails table
+        action:      str  — "send" | "edit" | "discard"
+        edited_body: str  — required when action is "edit"
+    """
+    try:
+        data = request.get_json(force=True) or {}
+
+        try:
+            email_id = int(data.get("email_id", 0))
+        except (TypeError, ValueError):
+            return jsonify({"error": "email_id must be an integer"}), 400
+
+        action      = str(data.get("action", "")).strip()
+        edited_body = str(data.get("edited_body", "")).strip()
+
+        if not email_id or action not in ("send", "edit", "discard"):
+            return jsonify({"error": "email_id and action (send|edit|discard) required"}), 400
+
+        from memory.database import update
+        row = fetch_one("SELECT * FROM emails WHERE id = ?", (email_id,))
+        if not row:
+            return jsonify({"error": f"Email #{email_id} not found"}), 404
+        if row.get("status") != "pending":
+            return jsonify({"error": f"Email #{email_id} is not pending (status={row.get('status')})"}), 400
+
+        if action == "discard":
+            update("emails", email_id, {"status": "discarded"})
+            logger.info(f"[EMAILS API] Email #{email_id} discarded")
+            return jsonify({"status": "discarded", "email_id": email_id}), 200
+
+        body_to_send = edited_body if action == "edit" and edited_body else row.get("draft_reply", "")
+        if not body_to_send:
+            return jsonify({"error": "No body to send"}), 400
+
+        if action == "edit":
+            update("emails", email_id, {"draft_reply": body_to_send})
+
+        result = _send_email_draft(row, body_to_send)
+        if result:
+            update("emails", email_id, {"status": "sent"})
+            logger.info(f"[EMAILS API] Email #{email_id} sent")
+            return jsonify({"status": "sent", "email_id": email_id}), 200
+        else:
+            return jsonify({"error": "Send failed — check logs"}), 500
+
+    except Exception as e:
+        logger.error(f"[EMAILS API] email_approve error: {e}")
+        return jsonify({"error": "Internal server error"}), 500
+
+
+def _send_email_draft(row: dict, body: str) -> bool:
+    """Send a draft email reply via GHL.
+
+    Args:
+        row:  Row dict from the emails table
+        body: Email body to send
+
+    Returns:
+        True on success, False on failure
+    """
+    try:
+        from email_processing.email_sender import send_via_ghl
+        subject = f"Re: {row.get('subject', '')}"
+        result  = send_via_ghl(
+            to_email    = row.get("from_email", ""),
+            subject     = subject,
+            body        = body,
+            location_id = None,
+        )
+        return result is not None
+    except Exception as e:
+        logger.error(f"[EMAILS API] _send_email_draft failed: {e}")
+        return False
 
 
 @emails_bp.route("/api/emails/bulk-discard", methods=["POST"])
