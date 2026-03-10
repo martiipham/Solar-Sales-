@@ -23,7 +23,6 @@ import KnowledgeBasePage from "./pages/KnowledgeBasePage";
 import OnboardingPage from "./pages/OnboardingPage";
 import DocsPage from "./pages/DocsPage";
 import LeadsPage from "./pages/LeadsPage";
-import ExperimentsPage from "./pages/ExperimentsPage";
 import AgentsPage from "./pages/AgentsPage";
 
 // Pages that require a minimum role
@@ -35,7 +34,6 @@ const PAGE_MIN_ROLE = {
   onboarding:      "client",
   board:           "admin",
   leads:           "admin",
-  experiments:     "admin",
   agents:          "admin",
   docs:            "admin",
   settings:        "admin",
@@ -136,8 +134,6 @@ export default function AppShell() {
         return <ApiKeysPage />;
       case "leads":
         return <LeadsPage />;
-      case "experiments":
-        return <ExperimentsPage />;
       case "agents":
         return <AgentsPage />;
       case "docs":

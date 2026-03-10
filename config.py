@@ -68,7 +68,7 @@ SALESFORCE_CLIENT_SECRET = get("SALESFORCE_CLIENT_SECRET", "")
 WEEKLY_BUDGET_AUD = float(get("WEEKLY_BUDGET_AUD", "500"))
 
 # Flask
-PORT_HUMAN_GATE    = int(get("PORT_HUMAN_GATE",    "5000"))
+PORT_HUMAN_GATE    = int(get("PORT_HUMAN_GATE",    "5010"))  # 5000 reserved by macOS ControlCenter
 PORT_GHL_WEBHOOKS  = int(get("PORT_GHL_WEBHOOKS",  "5001"))
 PORT_DASHBOARD_API = int(get("PORT_DASHBOARD_API", "5003"))  # swarm-board live feed
 

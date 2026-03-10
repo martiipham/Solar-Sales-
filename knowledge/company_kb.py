@@ -490,6 +490,7 @@ def seed_demo_company(client_id: str = "suntech_solar_perth"):
     init_kb_tables()
 
     upsert_company(client_id, {
+        "name": "SunTech Solar Perth",
         "company_name": "SunTech Solar Perth",
         "abn": "12 345 678 901",
         "phone": "08 9XXX XXXX",

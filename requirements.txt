@@ -12,7 +12,5 @@ python-dotenv>=1.0.0,<2.0.0
 requests>=2.31.0,<3.0.0
 pytz>=2024.1
 rich>=13.7.0,<15.0.0
-simple-salesforce>=1.12.5,<2.0.0
-slack-sdk>=3.27.0,<4.0.0
 PyJWT>=2.8.0,<3.0.0
 bcrypt>=4.1.0,<5.0.0

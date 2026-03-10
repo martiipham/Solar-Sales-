@@ -13,7 +13,6 @@ import json
 import logging
 from datetime import datetime
 from memory.database import update
-from memory.cold_ledger import log_lead_qualified
 from notifications.slack_notifier import alert_new_lead, alert_high_value_lead
 import config
 
@@ -68,7 +67,7 @@ def qualify(lead_data: dict, lead_id: int = None) -> dict:
 
     if lead_id:
         _save_to_lead(lead_id, result)
-        log_lead_qualified(lead_id, score, action)
+        logger.info(f"[QUALIFY] Lead {lead_id} scored {score} — {action}")
 
     _send_alerts(name, score, result.get("reason", ""), action, lead_data)
 

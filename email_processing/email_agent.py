@@ -32,7 +32,6 @@ from datetime import datetime
 
 import config
 from memory.database import insert, fetch_one, get_conn
-from memory.cold_ledger import log_event
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +118,7 @@ def process_email(email_data: dict, client_id: str = "default") -> dict:
     _notify_slack(extracted, score, action, subject, client_id)
 
     # ── Step 9: Cold ledger
-    log_event("EMAIL_LEAD_PROCESSED", json.dumps({
+    logger.info("EMAIL_LEAD_PROCESSED " + json.dumps({
         "from": from_addr,
         "subject": subject[:80],
         "intent": extracted.get("intent"),
