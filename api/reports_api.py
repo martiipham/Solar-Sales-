@@ -265,6 +265,40 @@ def weekly_trend():
         return jsonify({"error": str(e)}), 500
 
 
+@reports_bp.route("/api/reports/daily-activity", methods=["GET"])
+@require_auth()
+def daily_activity():
+    """Return last 7 days of call + email + lead counts for the activity chart.
+
+    Response:
+        days: list of {day, date, calls, emails, leads}
+              where day is a short weekday label (Mon, Tue, …)
+    """
+    try:
+        results = []
+        for i in range(6, -1, -1):
+            d        = (datetime.utcnow() - timedelta(days=i)).date()
+            date_str = d.isoformat()
+
+            calls_row  = fetch_one("SELECT COUNT(*) AS n FROM call_logs WHERE DATE(started_at)  = ?", (date_str,))
+            emails_row = fetch_one("SELECT COUNT(*) AS n FROM emails    WHERE DATE(received_at) = ?", (date_str,))
+            leads_row  = fetch_one("SELECT COUNT(*) AS n FROM leads     WHERE DATE(created_at)  = ?", (date_str,))
+
+            results.append({
+                "day":    d.strftime("%a"),
+                "date":   date_str,
+                "calls":  (calls_row  or {}).get("n", 0),
+                "emails": (emails_row or {}).get("n", 0),
+                "leads":  (leads_row  or {}).get("n", 0),
+            })
+
+        return jsonify({"days": results}), 200
+
+    except Exception as e:
+        logger.error(f"[REPORTS] daily_activity error: {e}")
+        return jsonify({"days": []}), 500
+
+
 def _build_highlights(curr_calls, curr_leads, prev_calls, prev_leads) -> list:
     """Build a list of highlight bullet points comparing current vs prior month."""
     highlights = []

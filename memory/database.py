@@ -346,6 +346,18 @@ def init_db():
                 ghl_contact_id TEXT
             );
 
+            -- Support messages: client-submitted help requests
+            CREATE TABLE IF NOT EXISTS support_messages (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id     INTEGER,
+                user_email  TEXT,
+                subject     TEXT,
+                message     TEXT NOT NULL,
+                status      TEXT DEFAULT 'open',
+                created_at  TEXT DEFAULT (datetime('now')),
+                resolved_at TEXT
+            );
+
             -- A/B tests (managed by ab_tester agent)
             CREATE TABLE IF NOT EXISTS ab_tests (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
