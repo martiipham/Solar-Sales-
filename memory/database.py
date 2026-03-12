@@ -1,8 +1,8 @@
-"""SQLite database setup and helpers for Solar Admin AI.
+"""SQLite database setup and helpers for SolarAdmin AI.
 
 Provides the single source of truth for all persistent storage:
 leads, call logs, email logs, CRM cache, knowledge base,
-users, auth tokens, API keys, settings, and agent run log.
+users, auth tokens, API keys, settings, and scheduled job log.
 """
 
 import sqlite3
@@ -266,60 +266,6 @@ def init_db():
                     CHECK(status IN ('draft','sent','accepted','declined'))
             );
 
-            -- Swarm experiments (capital allocation, A/B tests, strategy ideas)
-            CREATE TABLE IF NOT EXISTS experiments (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                created_at TEXT DEFAULT (datetime('now')),
-                completed_at TEXT,
-                status TEXT DEFAULT 'pending'
-                    CHECK(status IN ('pending','approved','running','complete','killed','rejected')),
-                idea_text TEXT,
-                bucket TEXT CHECK(bucket IN ('exploit','explore','moonshot')),
-                confidence_score REAL DEFAULT 0,
-                devil_score REAL DEFAULT 0,
-                kelly_fraction REAL DEFAULT 0,
-                budget_allocated REAL DEFAULT 0,
-                approved_by TEXT,
-                approved_at TEXT,
-                failure_mode TEXT
-            );
-
-            -- Agent task queue (inter-agent job dispatch)
-            CREATE TABLE IF NOT EXISTS task_queue (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                created_at TEXT DEFAULT (datetime('now')),
-                completed_at TEXT,
-                job_type TEXT NOT NULL,
-                priority INTEGER DEFAULT 5,
-                tier INTEGER DEFAULT 3,
-                status TEXT DEFAULT 'queued'
-                    CHECK(status IN ('queued','processing','complete','failed')),
-                context_payload TEXT,
-                output TEXT
-            );
-
-            -- Pheromone signals (ant-colony routing signals between agents)
-            CREATE TABLE IF NOT EXISTS pheromone_signals (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                created_at TEXT DEFAULT (datetime('now')),
-                signal_type TEXT NOT NULL,
-                topic TEXT NOT NULL,
-                strength REAL DEFAULT 1.0,
-                vertical TEXT,
-                channel TEXT,
-                experiment_id INTEGER,
-                decay_factor REAL DEFAULT 1.0
-            );
-
-            -- Circuit breaker log (yellow/orange/red halt states)
-            CREATE TABLE IF NOT EXISTS circuit_breaker_log (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                triggered_at TEXT DEFAULT (datetime('now')),
-                resolved_at TEXT,
-                level TEXT NOT NULL CHECK(level IN ('yellow','orange','red')),
-                reason TEXT
-            );
-
             -- CRM stats snapshot (written by crm_sync every 30 min)
             CREATE TABLE IF NOT EXISTS crm_stats (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -358,67 +304,6 @@ def init_db():
                 resolved_at TEXT
             );
 
-            -- A/B tests (managed by ab_tester agent)
-            CREATE TABLE IF NOT EXISTS ab_tests (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                created_at TEXT DEFAULT (datetime('now')),
-                completed_at TEXT,
-                name TEXT NOT NULL,
-                status TEXT DEFAULT 'running'
-                    CHECK(status IN ('running','complete','cancelled')),
-                winner TEXT,
-                winner_stats TEXT
-            );
-
-            -- Discovered opportunities (managed by scout_agent + opportunity_store)
-            CREATE TABLE IF NOT EXISTS opportunities (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                created_at TEXT DEFAULT (datetime('now')),
-                title TEXT NOT NULL,
-                opp_type TEXT,
-                status TEXT DEFAULT 'discovered'
-                    CHECK(status IN ('discovered','actioned','won','lost')),
-                effort TEXT DEFAULT 'medium'
-                    CHECK(effort IN ('low','medium','high')),
-                impact TEXT DEFAULT 'medium'
-                    CHECK(impact IN ('low','medium','high')),
-                priority_score REAL DEFAULT 5.0,
-                source TEXT,
-                notes TEXT
-            );
-
-            -- Inter-agent message bus (managed by bus/message_bus.py)
-            CREATE TABLE IF NOT EXISTS message_bus (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                created_at TEXT DEFAULT (datetime('now')),
-                to_agent TEXT NOT NULL,
-                from_agent TEXT DEFAULT 'system',
-                msg_type TEXT NOT NULL,
-                priority INTEGER DEFAULT 3,
-                payload TEXT,
-                status TEXT DEFAULT 'queued'
-                    CHECK(status IN ('queued','processing','complete','failed'))
-            );
-
-            -- Knowledge graph entities (companies, people, products)
-            CREATE TABLE IF NOT EXISTS kg_entities (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                created_at TEXT DEFAULT (datetime('now')),
-                entity_type TEXT NOT NULL,
-                name TEXT NOT NULL,
-                properties TEXT,
-                source TEXT
-            );
-
-            -- Knowledge graph relationships between entities
-            CREATE TABLE IF NOT EXISTS kg_relationships (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                created_at TEXT DEFAULT (datetime('now')),
-                from_entity_id INTEGER NOT NULL,
-                to_entity_id INTEGER NOT NULL,
-                rel_type TEXT NOT NULL,
-                weight REAL DEFAULT 1.0
-            );
         """)
     _apply_migrations()
     print("[DB] Database ready.")

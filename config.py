@@ -1,4 +1,4 @@
-"""Configuration loader for Solar Swarm.
+"""Configuration loader for SolarAdmin AI.
 
 Loads all environment variables from .env file and provides
 typed access to configuration throughout the application.
@@ -35,7 +35,7 @@ GHL_BASE_URL = "https://services.leadconnectorhq.com"
 # Slack
 SLACK_WEBHOOK_URL = get("SLACK_WEBHOOK_URL", "")
 SLACK_BOT_TOKEN = get("SLACK_BOT_TOKEN", "")          # xoxb-... for Web API
-SLACK_DEFAULT_CHANNEL = get("SLACK_DEFAULT_CHANNEL", "#swarm-alerts")
+SLACK_DEFAULT_CHANNEL = get("SLACK_DEFAULT_CHANNEL", "#solaradmin-alerts")
 SLACK_SIGNING_SECRET = get("SLACK_SIGNING_SECRET", "")  # For verifying interactive payloads
 
 # Human Gate — protect approve/reject/dashboard endpoints with a shared secret
@@ -79,37 +79,10 @@ GHL_STAGE_BOOKED  = get("GHL_STAGE_BOOKED", "")
 GHL_STAGE_NURTURE = get("GHL_STAGE_NURTURE", "")
 
 # Database
-DATABASE_PATH = get("DATABASE_PATH", "swarm.db")
+DATABASE_PATH = get("DATABASE_PATH", "solaradmin.db")
 
 # Logging
 LOG_LEVEL = get("LOG_LEVEL", "INFO")
-
-# Capital allocation buckets (fractions must sum to 1.0)
-BUCKET_EXPLOIT = 0.60
-BUCKET_EXPLORE = 0.30
-BUCKET_MOONSHOT = 0.10
-
-# Confidence thresholds
-CONFIDENCE_AUTO_PROCEED = 8.5
-CONFIDENCE_AUTO_KILL = 5.0
-
-# Circuit breaker thresholds
-CB_YELLOW_FAILURES = 3
-CB_ORANGE_BURN_RATE = 1.50   # 150% of plan
-CB_RED_FAILURES = 5
-CB_RED_LOSS_FRACTION = 0.40  # 40% of weekly budget
-
-# Kelly fraction (25% fractional Kelly)
-KELLY_FRACTION = 0.25
-KELLY_MAX_SINGLE = 0.25      # Never more than 25% in one experiment
-
-# Explore protocol hours
-EXPLORE_TOTAL_HOURS = 72
-EXPLORE_CTR_THRESHOLD = 0.02  # 2% CTR triggers paid spend
-
-# Pheromone decay
-PHEROMONE_DECAY_DAYS = 7     # Start decaying after 7 days
-PHEROMONE_DECAY_RATE = 0.50  # 50% weight loss per day after threshold
 
 # ── Voice AI (Retell)
 RETELL_API_KEY           = get("RETELL_API_KEY", "")
