@@ -30,7 +30,9 @@ import hashlib
 import hmac
 import json
 import logging
+import random
 import threading
+import time
 from datetime import datetime, timezone, timedelta
 from flask import Flask, request, jsonify
 from flask_limiter import Limiter
@@ -104,14 +106,19 @@ def _verify_retell_signature() -> bool:
     """Verify HMAC-SHA256 signature from Retell webhook request.
 
     Retell sends the signature in the x-retell-signature header.
-    If RETELL_WEBHOOK_SECRET is not set, verification is skipped (dev mode).
+    Rejects requests when RETELL_WEBHOOK_SECRET is not configured — skipping
+    verification in production is a security vulnerability.
 
     Returns:
-        True if signature is valid or secret is not configured, False otherwise.
+        True if signature is valid, False otherwise.
     """
     secret = config.get("RETELL_WEBHOOK_SECRET", "")
     if not secret:
-        return True  # Skip verification when secret is not configured
+        logger.error(
+            "[VOICE] RETELL_WEBHOOK_SECRET is not set — rejecting request. "
+            "Configure RETELL_WEBHOOK_SECRET in your environment to accept Retell events."
+        )
+        return False
 
     sig_header = request.headers.get("x-retell-signature", "")
     if not sig_header:
@@ -375,7 +382,20 @@ def elevenlabs_response():
 
     ElevenLabs sends messages in a slightly different format than Retell.
     This adapter normalises to our standard LLM pipeline.
+
+    Authenticated via X-ElevenLabs-Secret header matched against
+    ELEVENLABS_WEBHOOK_SECRET environment variable.
     """
+    el_secret = config.get("ELEVENLABS_WEBHOOK_SECRET", "")
+    if not el_secret:
+        logger.error(
+            "[VOICE ELEVENLABS] ELEVENLABS_WEBHOOK_SECRET is not set — rejecting request."
+        )
+        return jsonify({"error": "Invalid signature"}), 401
+    provided = request.headers.get("X-ElevenLabs-Secret", "")
+    if not hmac.compare_digest(el_secret, provided):
+        logger.warning("[VOICE ELEVENLABS] /voice/elevenlabs/response: invalid secret")
+        return jsonify({"error": "Invalid signature"}), 401
     try:
         data       = request.get_json(force=True) or {}
         session_id = data.get("session_id", "unknown")
@@ -416,8 +436,26 @@ def elevenlabs_response():
 # LLM CALLER
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Voice-specific retry configuration — tuned for live callers waiting on the line.
+# SDK-level retries handle transport/429/5xx; app-level retries catch remaining
+# transient API errors. Total budget prevents excessive wait on a live call.
+_LLM_MAX_RETRIES = 2           # App-level retry attempts (on top of SDK retries)
+_LLM_BASE_DELAY = 0.3          # Initial backoff — 300ms (voice-latency sensitive)
+_LLM_MAX_DELAY = 2.0           # Per-retry delay cap
+_LLM_TOTAL_TIMEOUT = 8.0       # Hard ceiling for all retries combined
+
+
 def _call_llm(messages: list, allow_tools: bool = True) -> tuple[str, list]:
-    """Call GPT-4o with the conversation and optional function calling.
+    """Call GPT-4o with exponential backoff retry.
+
+    Two layers of retry protection:
+      1. OpenAI SDK ``max_retries=2`` — handles transport errors, 429, 5xx
+         with its own exponential backoff internally.
+      2. Application-level retry loop (``_LLM_MAX_RETRIES``) — catches API
+         errors that slip past the SDK (malformed responses, partial failures).
+
+    A total time budget (``_LLM_TOTAL_TIMEOUT``) ensures we never keep a live
+    caller waiting longer than ~8 seconds across all attempts.
 
     Args:
         messages: OpenAI-format message list
@@ -429,43 +467,92 @@ def _call_llm(messages: list, allow_tools: bool = True) -> tuple[str, list]:
     if not config.is_configured():
         return "Thank you for calling. Let me arrange for one of our consultants to call you back.", []
 
-    try:
-        from openai import OpenAI
-        client   = OpenAI(api_key=config.OPENAI_API_KEY, timeout=30.0)
-        kwargs   = {
-            "model":       config.OPENAI_MODEL,
-            "messages":    messages,
-            "temperature": 0.7,
-            "max_tokens":  300,
-        }
+    from openai import OpenAI, APIError, APITimeoutError, RateLimitError
 
-        if allow_tools:
-            kwargs["tools"]       = FUNCTION_DEFINITIONS
-            kwargs["tool_choice"] = "auto"
+    client = OpenAI(
+        api_key=config.OPENAI_API_KEY,
+        timeout=30.0,
+        max_retries=2,  # SDK-level retries for transport/rate-limit errors
+    )
+    kwargs = {
+        "model":       config.OPENAI_MODEL,
+        "messages":    messages,
+        "temperature": 0.7,
+        "max_tokens":  300,
+    }
+    if allow_tools:
+        kwargs["tools"]       = FUNCTION_DEFINITIONS
+        kwargs["tool_choice"] = "auto"
 
-        response  = client.chat.completions.create(**kwargs)
-        choice    = response.choices[0].message
-        text      = choice.content or ""
-        tool_calls = []
+    start = time.monotonic()
 
-        if hasattr(choice, "tool_calls") and choice.tool_calls:
-            tool_calls = [
-                {
-                    "id": tc.id,
-                    "type": "function",
-                    "function": {
-                        "name":      tc.function.name,
-                        "arguments": tc.function.arguments,
+    for attempt in range(_LLM_MAX_RETRIES + 1):
+        # Enforce total time budget before each attempt
+        elapsed = time.monotonic() - start
+        if attempt > 0 and elapsed >= _LLM_TOTAL_TIMEOUT:
+            logger.warning(
+                "[VOICE LLM] Time budget (%.1fs) exhausted after %d attempt(s)",
+                _LLM_TOTAL_TIMEOUT, attempt,
+            )
+            break
+
+        try:
+            response   = client.chat.completions.create(**kwargs)
+            choice     = response.choices[0].message
+            text       = choice.content or ""
+            tool_calls = []
+
+            if hasattr(choice, "tool_calls") and choice.tool_calls:
+                tool_calls = [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name":      tc.function.name,
+                            "arguments": tc.function.arguments,
+                        }
                     }
-                }
-                for tc in choice.tool_calls
-            ]
+                    for tc in choice.tool_calls
+                ]
 
-        return text, tool_calls
+            if attempt > 0:
+                logger.info(
+                    "[VOICE LLM] Succeeded on retry %d (%.1fs total)",
+                    attempt, time.monotonic() - start,
+                )
+            return text, tool_calls
 
-    except Exception as e:
-        logger.error(f"[VOICE LLM] GPT-4o error: {e}")
-        return "I apologise, I'm having a brief technical issue. Could I take your number and have someone call you back?", []
+        except (APIError, APITimeoutError, RateLimitError) as e:
+            if attempt < _LLM_MAX_RETRIES:
+                delay = min(
+                    _LLM_BASE_DELAY * (2 ** attempt) + random.uniform(0, _LLM_BASE_DELAY),
+                    _LLM_MAX_DELAY,
+                )
+                remaining = _LLM_TOTAL_TIMEOUT - (time.monotonic() - start)
+                if delay > remaining:
+                    logger.warning(
+                        "[VOICE LLM] Insufficient time for retry (need %.1fs, have %.1fs)",
+                        delay, remaining,
+                    )
+                    break
+                logger.warning(
+                    "[VOICE LLM] %s on attempt %d/%d, retrying in %.2fs: %s",
+                    type(e).__name__, attempt + 1, _LLM_MAX_RETRIES + 1,
+                    delay, str(e)[:120],
+                )
+                time.sleep(delay)
+            else:
+                logger.error(
+                    "[VOICE LLM] GPT-4o failed after %d attempt(s) (%.1fs): %s",
+                    attempt + 1, time.monotonic() - start, str(e)[:120],
+                )
+
+        except Exception as e:
+            # Non-retryable (auth, invalid request, etc.) — fail fast
+            logger.error("[VOICE LLM] Non-retryable error: %s", str(e)[:120])
+            break
+
+    return "I apologise, I'm having a brief technical issue. Could I take your number and have someone call you back?", []
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -1,0 +1,17 @@
+{
+  "emailTemplates": {
+    "error": "An error occurred while loading email templates. Please try again later."
+  },
+  "crmIntegrationWizard": {
+    "error": "There was an issue with the CRM integration wizard. Please check your settings and try again."
+  },
+  "proposalBuilder": {
+    "error": "Failed to generate proposal. Please ensure all required data is provided."
+  },
+  "reports": {
+    "error": "An error occurred while fetching reports. Please verify your permissions."
+  },
+  "knowledgeBaseEditor": {
+    "error": "There was an unexpected failure in the knowledge base editor. Please try again later."
+  }
+}

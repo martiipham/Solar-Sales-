@@ -3,6 +3,7 @@
 Endpoints:
   GET /api/calls              — paginated call list (filterable)
   GET /api/calls/stats        — today / this week / all time counts + rates
+  GET /api/calls/timeseries   — daily call metrics for the last N days (line chart)
   GET /api/calls/<call_id>    — single call with full transcript
 """
 
@@ -14,6 +15,7 @@ from flask import Blueprint, jsonify, request
 
 from memory.database import fetch_all, fetch_one
 from api.auth import require_auth
+from api.cache import cached
 
 logger = logging.getLogger(__name__)
 
@@ -58,6 +60,7 @@ def _row_to_call(row) -> dict:
 
 @calls_bp.route("/api/calls", methods=["GET"])
 @require_auth()
+@cached(ttl=30, key="solar:calls:list", vary_on_args=True)
 def list_calls():
     """Return paginated call log, optionally filtered by date range or status."""
     try:
@@ -74,6 +77,10 @@ def list_calls():
             params.append(status)
 
         if since:
+            try:
+                datetime.fromisoformat(since)
+            except (ValueError, TypeError):
+                return jsonify({"error": "since must be a valid ISO date (e.g. 2026-04-01)"}), 400
             clauses.append("started_at >= ?")
             params.append(since)
 
@@ -105,6 +112,7 @@ def list_calls():
 
 @calls_bp.route("/api/calls/stats", methods=["GET"])
 @require_auth()
+@cached(ttl=60, key="solar:calls:stats")
 def call_stats():
     """Return aggregated call performance stats for the dashboard."""
     try:
@@ -164,8 +172,91 @@ def call_stats():
         return jsonify({"error": str(e)}), 500
 
 
+@calls_bp.route("/api/calls/timeseries", methods=["GET"])
+@require_auth()
+@cached(ttl=60, key="solar:calls:timeseries", vary_on_args=True)
+def call_timeseries():
+    """Return daily call metrics for the last N days, zero-filled for chart rendering.
+
+    Query params:
+        days: look-back window (default 14, max 90)
+    """
+    try:
+        days = min(int(request.args.get("days", 14)), 90)
+        if days < 1:
+            return jsonify({"error": "days must be >= 1"}), 400
+
+        cutoff = (datetime.utcnow() - timedelta(days=days)).strftime("%Y-%m-%d")
+
+        rows = fetch_all(
+            "SELECT DATE(started_at) AS day, "
+            "COUNT(*) AS total, "
+            "SUM(CASE WHEN status='completed' THEN 1 ELSE 0 END) AS completed, "
+            "SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed, "
+            "ROUND(AVG(duration_seconds), 0) AS avg_duration_s, "
+            "ROUND(AVG(lead_score), 1) AS avg_lead_score "
+            "FROM call_logs "
+            "WHERE DATE(started_at) >= ? "
+            "GROUP BY DATE(started_at) "
+            "ORDER BY day",
+            (cutoff,),
+        )
+
+        # Index DB results by date for O(1) merge
+        by_day = {dict(r)["day"]: dict(r) for r in rows}
+
+        # Build complete series with zero-fill for days without calls
+        today = datetime.utcnow().date()
+        series = []
+        for i in range(days - 1, -1, -1):
+            d = (today - timedelta(days=i)).isoformat()
+            if d in by_day:
+                entry = by_day[d]
+                series.append({
+                    "date":           entry["day"],
+                    "total":          entry["total"],
+                    "completed":      entry["completed"] or 0,
+                    "failed":         entry["failed"] or 0,
+                    "avg_duration_s": int(entry["avg_duration_s"] or 0),
+                    "avg_lead_score": float(entry["avg_lead_score"] or 0),
+                })
+            else:
+                series.append({
+                    "date":           d,
+                    "total":          0,
+                    "completed":      0,
+                    "failed":         0,
+                    "avg_duration_s": 0,
+                    "avg_lead_score": 0.0,
+                })
+
+        # Totals across the window for summary cards
+        sum_total     = sum(p["total"] for p in series)
+        sum_completed = sum(p["completed"] for p in series)
+
+        return jsonify({
+            "window_days": days,
+            "series":      series,
+            "totals": {
+                "calls":     sum_total,
+                "completed": sum_completed,
+                "failed":    sum(p["failed"] for p in series),
+                "completion_rate": round(
+                    (sum_completed / sum_total * 100) if sum_total else 0, 1
+                ),
+            },
+        }), 200
+
+    except ValueError:
+        return jsonify({"error": "days must be an integer"}), 400
+    except Exception as e:
+        logger.error(f"[CALLS API] call_timeseries error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @calls_bp.route("/api/calls/<call_id>", methods=["GET"])
 @require_auth()
+@cached(ttl=300, key="solar:calls:detail", vary_on_args=True)
 def get_call(call_id: str):
     """Return full call detail including parsed transcript."""
     try:

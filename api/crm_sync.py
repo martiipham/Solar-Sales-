@@ -387,6 +387,40 @@ def push_lead_to_ghl(lead_id: int) -> dict:
     return {"success": True, "ghl_contact_id": ghl_id, "action": action}
 
 
+def bulk_push_leads(lead_ids: list[int]) -> dict:
+    """Push multiple leads to GHL with error isolation.
+
+    Each lead is pushed individually via push_lead_to_ghl(). Failures on
+    one lead do not block processing of subsequent leads. The GHL client's
+    token bucket rate limiter automatically paces the underlying API calls.
+
+    Args:
+        lead_ids: List of lead row IDs to push
+
+    Returns:
+        Dict with succeeded count, failed count, and per-lead errors
+    """
+    succeeded = 0
+    failed = 0
+    errors = {}
+
+    for lead_id in lead_ids:
+        try:
+            result = push_lead_to_ghl(lead_id)
+            if result.get("success"):
+                succeeded += 1
+            else:
+                failed += 1
+                errors[lead_id] = result.get("error", "Unknown error")
+        except Exception as e:
+            failed += 1
+            errors[lead_id] = str(e)
+            logger.error(f"[CRM SYNC] bulk_push lead {lead_id} exception: {e}")
+
+    print(f"[CRM SYNC] Bulk push complete: {succeeded} succeeded, {failed} failed")
+    return {"succeeded": succeeded, "failed": failed, "errors": errors}
+
+
 def _request_ghl_search(phone: str) -> dict | None:
     """Search GHL for a contact by phone number.
 

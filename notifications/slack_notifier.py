@@ -6,8 +6,9 @@ Uses simple incoming webhooks — no Slack SDK required.
 
 import json
 import logging
-import requests
 from datetime import datetime
+
+import api_helpers
 import config
 
 logger = logging.getLogger(__name__)
@@ -26,7 +27,7 @@ def _post(payload: dict) -> bool:
         logger.warning("[SLACK] No webhook URL configured — skipping notification")
         return False
     try:
-        resp = requests.post(
+        resp = api_helpers.post(
             config.SLACK_WEBHOOK_URL,
             json=payload,
             timeout=10,

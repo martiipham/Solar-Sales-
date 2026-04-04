@@ -1,0 +1,27 @@
+[
+  {
+    "id": 1,
+    "name": "New Customer Welcome",
+    "status": "active"
+  },
+  {
+    "id": 2,
+    "name": "Quote Request Follow-up",
+    "status": "draft"
+  },
+  {
+    "id": 3,
+    "name": "Proposal Submission Confirmation",
+    "status": "active"
+  },
+  {
+    "id": 4,
+    "name": "System Maintenance Notice",
+    "status": "draft"
+  },
+  {
+    "id": 5,
+    "name": "Payment Reminder",
+    "status": "active"
+  }
+]

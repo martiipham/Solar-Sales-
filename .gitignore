@@ -54,3 +54,6 @@ htmlcov/
 # swarm-board deps
 swarm-board/node_modules/
 swarm-board/dist/
+
+# Frontend
+frontend/node_modules/

@@ -9,8 +9,10 @@ API Reference: https://docs.retellai.com
 """
 
 import logging
+
 import requests
 
+import api_helpers
 import config
 
 logger = logging.getLogger(__name__)
@@ -42,7 +44,7 @@ def _retell_request(method: str, endpoint: str, data: dict = None) -> dict | Non
         return None
     try:
         url  = f"{RETELL_BASE}{endpoint}"
-        resp = requests.request(method, url, headers=_retell_headers(), json=data, timeout=20)
+        resp = api_helpers.request_with_retry(method, url, headers=_retell_headers(), json=data, timeout=20)
         if resp.status_code in (200, 201):
             return resp.json()
         logger.error(f"[RETELL] {method} {endpoint} → {resp.status_code}: {resp.text[:200]}")

@@ -18,6 +18,8 @@ import json
 import logging
 from datetime import datetime, timedelta
 
+import api_helpers
+
 logger = logging.getLogger(__name__)
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -719,7 +721,6 @@ def _fn_check_availability(args: dict, ctx: dict) -> dict:
         Dict with available bool and message for the agent
     """
     import os
-    import requests as _requests
 
     api_key      = os.getenv("CALCOM_API_KEY", "")
     event_type   = os.getenv("CALCOM_EVENT_TYPE_ID", "")
@@ -736,7 +737,7 @@ def _fn_check_availability(args: dict, ctx: dict) -> dict:
         end_h = str(int(time.split(":")[0]) + 1).zfill(2)
         end   = f"{date}T{end_h}:{time.split(':')[1]}:00Z"
 
-        resp = _requests.get(
+        resp = api_helpers.get(
             "https://api.cal.com/v1/slots/available",
             params={
                 "apiKey":      api_key,
@@ -773,7 +774,6 @@ def _fn_book_appointment(args: dict, ctx: dict) -> dict:
         Dict with booking confirmation details
     """
     import os
-    import requests as _requests
 
     api_key    = os.getenv("CALCOM_API_KEY", "")
     event_type = os.getenv("CALCOM_EVENT_TYPE_ID", "")
@@ -808,7 +808,7 @@ def _fn_book_appointment(args: dict, ctx: dict) -> dict:
             "language": "en",
             "metadata": {"address": address, "source": "voice-ai"},
         }
-        resp = _requests.post(
+        resp = api_helpers.post(
             "https://api.cal.com/v1/bookings",
             params={"apiKey": api_key},
             json=payload,
@@ -847,7 +847,6 @@ def _fn_send_sms_confirmation(args: dict, ctx: dict) -> dict:
         Dict with sent status
     """
     import os
-    import requests as _requests
     from requests.auth import HTTPBasicAuth
 
     account_sid = os.getenv("TWILIO_ACCOUNT_SID", "")
@@ -869,7 +868,7 @@ def _fn_send_sms_confirmation(args: dict, ctx: dict) -> dict:
         return {"sent": False, "reason": "Twilio not configured"}
 
     try:
-        resp = _requests.post(
+        resp = api_helpers.post(
             f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Messages.json",
             data={"From": from_number, "To": phone, "Body": message},
             auth=HTTPBasicAuth(account_sid, auth_token),

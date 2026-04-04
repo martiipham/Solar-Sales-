@@ -30,6 +30,7 @@ from flask_limiter.util import get_remote_address
 
 import config
 from memory.database import fetch_all, fetch_one
+from api.cache import cached, invalidate_pattern
 
 logger = logging.getLogger(__name__)
 
@@ -88,19 +89,15 @@ def _check_auth():
 
     token = header[7:]
     try:
-        # Reuse the JWT secret and token-hash helper from auth module
-        from api.auth import _JWT_SECRET, _hash_token
+        from api.auth import _JWT_SECRET, _hash_token, _check_revocation
         import jwt as _jwt
-        _jwt.decode(token, _JWT_SECRET, algorithms=["HS256"])
+        payload = _jwt.decode(token, _JWT_SECRET, algorithms=["HS256"])
     except Exception:
         return jsonify({"error": "Invalid or expired token"}), 401
 
-    # Revocation check — guard against logged-out tokens
-    from api.auth import _hash_token as _ht
-    rev_row = fetch_one(
-        "SELECT revoked FROM auth_tokens WHERE token_hash = ?", (_ht(token),)
-    )
-    if not rev_row or rev_row.get("revoked"):
+    # Revocation check — Redis fast-path, SQLite fallback
+    token_hash = _hash_token(token)
+    if _check_revocation(token, token_hash, payload):
         return jsonify({"error": "Session revoked — please log in again"}), 401
 
 
@@ -118,6 +115,7 @@ def _register_blueprints():
         from api.reports_api import reports_bp
         from api.onboarding_api import onboarding_bp
         from api.emails_api import emails_bp
+        from api.crm_integration_api import crm_integration_bp
 
         dashboard_app.register_blueprint(auth_bp)
         dashboard_app.register_blueprint(users_bp)
@@ -129,6 +127,7 @@ def _register_blueprints():
         dashboard_app.register_blueprint(reports_bp)
         dashboard_app.register_blueprint(onboarding_bp)
         dashboard_app.register_blueprint(emails_bp)
+        dashboard_app.register_blueprint(crm_integration_bp)
 
         # Seed defaults on startup
         seed_owner()
@@ -207,6 +206,7 @@ def support_message():
 # ── Agent config endpoints ────────────────────────────────────────────────────
 
 @dashboard_app.route("/api/agents/config", methods=["GET"])
+@cached(ttl=120, key="solar:agents:config")
 def agents_config_get():
     """Return per-agent enabled/disabled state and last scheduler run times.
 
@@ -264,6 +264,7 @@ def agents_config_patch():
             )
 
         logger.info(f"[DASH API] Agent '{agent_id}' set to enabled={enabled}")
+        invalidate_pattern("solar:agents:*")
         return jsonify({"agent_id": agent_id, "enabled": enabled}), 200
     except Exception as e:
         logger.error(f"[DASH API] agents_config_patch error: {e}")
@@ -273,6 +274,7 @@ def agents_config_patch():
 # ── CRM endpoints ─────────────────────────────────────────────────────────────
 
 @dashboard_app.route("/api/crm/status", methods=["GET"])
+@cached(ttl=300, key="solar:crm:status")
 def crm_status_endpoint():
     """Return which CRM is active and all configured integrations."""
     try:
@@ -288,6 +290,7 @@ def crm_status_endpoint():
 
 
 @dashboard_app.route("/api/crm/pipeline", methods=["GET"])
+@cached(ttl=120, key="solar:crm:pipeline")
 def crm_pipeline():
     """Return pipeline stages with contact counts.
 
@@ -322,6 +325,7 @@ def crm_pipeline():
 
 
 @dashboard_app.route("/api/crm/contacts", methods=["GET"])
+@cached(ttl=120, key="solar:crm:contacts", vary_on_args=True)
 def crm_contacts():
     """Return recent contacts from the cache table."""
     try:
@@ -339,6 +343,7 @@ def crm_contacts():
 
 
 @dashboard_app.route("/api/crm/metrics", methods=["GET"])
+@cached(ttl=120, key="solar:crm:metrics")
 def crm_metrics():
     """Return conversion funnel metrics from the cache."""
     try:
@@ -367,6 +372,7 @@ def crm_metrics():
 # ── Swarm endpoints ───────────────────────────────────────────────────────────
 
 @dashboard_app.route("/api/swarm/summary", methods=["GET"])
+@cached(ttl=60, key="solar:swarm:summary")
 def swarm_summary():
     """Return the swarm hot memory summary."""
     try:
@@ -378,6 +384,7 @@ def swarm_summary():
 
 
 @dashboard_app.route("/api/swarm/experiments", methods=["GET"])
+@cached(ttl=60, key="solar:swarm:experiments", vary_on_args=True)
 def swarm_experiments():
     """Return recent experiments, optionally filtered by status."""
     try:
@@ -399,6 +406,7 @@ def swarm_experiments():
 
 
 @dashboard_app.route("/api/swarm/leads", methods=["GET"])
+@cached(ttl=30, key="solar:swarm:leads", vary_on_args=True)
 def swarm_leads():
     """Return recent leads from the database."""
     try:
@@ -415,6 +423,7 @@ def swarm_leads():
 
 
 @dashboard_app.route("/api/swarm/circuit-breaker", methods=["GET"])
+@cached(ttl=30, key="solar:swarm:circuit-breaker")
 def circuit_breaker():
     """Return current circuit breaker state."""
     try:
@@ -431,6 +440,7 @@ def circuit_breaker():
 # ── Voice status ─────────────────────────────────────────────────────────────
 
 @dashboard_app.route("/api/voice/status", methods=["GET"])
+@cached(ttl=300, key="solar:voice:status")
 def voice_status():
     """Return whether the voice AI is configured and active."""
     try:
@@ -456,6 +466,7 @@ def voice_status():
 # ── Dashboard summary ────────────────────────────────────────────────────────
 
 @dashboard_app.route("/api/dashboard/summary", methods=["GET"])
+@cached(ttl=30, key="solar:dashboard:summary")
 def dashboard_summary():
     """Return today's aggregated KPI metrics for the dashboard overview.
 
@@ -519,6 +530,7 @@ def dashboard_summary():
 # ── Leads list ────────────────────────────────────────────────────────────────
 
 @dashboard_app.route("/api/leads", methods=["GET"])
+@cached(ttl=30, key="solar:leads:list", vary_on_args=True)
 def leads_list():
     """Return recent leads from the database.
 
@@ -559,6 +571,9 @@ def update_lead_status(lead_id):
         with get_conn() as conn:
             conn.execute("UPDATE leads SET status = ? WHERE id = ?", (status, lead_id))
         logger.info(f"[LEADS API] Lead {lead_id} status → {status}")
+        invalidate_pattern("solar:leads:*")
+        invalidate_pattern("solar:dashboard:*")
+        invalidate_pattern("solar:swarm:leads*")
         return jsonify({"ok": True, "lead_id": lead_id, "status": status}), 200
     except Exception as e:
         logger.error(f"[LEADS API] update_lead_status error: {e}")
@@ -677,6 +692,7 @@ def agents_status_patch():
 # ── Board state ───────────────────────────────────────────────────────────────
 
 @dashboard_app.route("/api/board/state", methods=["GET"])
+@cached(ttl=30, key="solar:board:state")
 def board_state():
     """Return board-state.json merged with live DB experiment and lead counts."""
     try:

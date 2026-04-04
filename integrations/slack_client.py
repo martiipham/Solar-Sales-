@@ -12,8 +12,11 @@ Requires SLACK_BOT_TOKEN in environment.
 """
 
 import logging
-import requests
 from datetime import datetime
+
+import requests
+
+import api_helpers
 import config
 
 logger = logging.getLogger(__name__)
@@ -47,9 +50,9 @@ def _request(method: str, endpoint: str, data: dict = None, params: dict = None)
     try:
         url = f"{SLACK_API_BASE}/{endpoint}"
         if method == "GET":
-            resp = requests.get(url, headers=_headers(), params=params, timeout=10)
+            resp = api_helpers.get(url, headers=_headers(), params=params, timeout=10)
         else:
-            resp = requests.post(url, headers=_headers(), json=data, timeout=10)
+            resp = api_helpers.post(url, headers=_headers(), json=data, timeout=10)
         result = resp.json()
         if not result.get("ok"):
             logger.error(f"[SLACK_API] {endpoint} error: {result.get('error', 'unknown')}")
@@ -306,7 +309,7 @@ def upload_file(channel: str, content: str, filename: str, title: str = None) ->
     if not config.SLACK_BOT_TOKEN:
         return None
     try:
-        resp = requests.post(
+        resp = api_helpers.post(
             f"{SLACK_API_BASE}/files.upload",
             headers={"Authorization": f"Bearer {config.SLACK_BOT_TOKEN}"},
             data={

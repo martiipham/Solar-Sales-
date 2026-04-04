@@ -69,6 +69,19 @@ def process_post_call(webhook_data: dict, call_ctx: dict) -> dict:
     recording    = webhook_data.get("recording_url", "")
     client_id    = call_ctx.get("client_id", "default")
 
+    # Idempotency guard — Retell may retry the post-call webhook on 5xx responses.
+    # If this call has already been finalised, skip processing to prevent duplicate
+    # CRM updates, Slack notifications, and follow-up task creation.
+    already_done = fetch_one(
+        "SELECT id FROM call_logs WHERE call_id = ? AND status = 'complete'",
+        (call_id,),
+    )
+    if already_done:
+        logger.warning(
+            f"[POST-CALL] Duplicate post-call webhook for call_id={call_id} — skipping."
+        )
+        return {"call_id": call_id, "skipped": True, "reason": "already_processed"}
+
     print(f"[POST-CALL] Processing call {call_id} | {duration_s}s | {len(transcript)} turns")
 
     # ── Step 1: Extract structured data from transcript

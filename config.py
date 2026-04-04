@@ -5,6 +5,7 @@ typed access to configuration throughout the application.
 """
 
 import os
+import secrets
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -64,6 +65,11 @@ SALESFORCE_SECURITY_TOKEN = get("SALESFORCE_SECURITY_TOKEN", "")
 SALESFORCE_CLIENT_ID = get("SALESFORCE_CLIENT_ID", "")
 SALESFORCE_CLIENT_SECRET = get("SALESFORCE_CLIENT_SECRET", "")
 
+# Agile CRM
+AGILECRM_DOMAIN = get("AGILECRM_DOMAIN", "")         # Subdomain (e.g. "mycompany" for mycompany.agilecrm.com)
+AGILECRM_EMAIL = get("AGILECRM_EMAIL", "")            # Account email for Basic Auth
+AGILECRM_API_KEY = get("AGILECRM_API_KEY", "")        # REST API key
+
 # Budget
 WEEKLY_BUDGET_AUD = float(get("WEEKLY_BUDGET_AUD", "500"))
 
@@ -97,7 +103,9 @@ TRANSFER_PHONE           = get("TRANSFER_PHONE", "")
 DEFAULT_CLIENT_ID        = get("DEFAULT_CLIENT_ID", "default")
 
 # ── Auth
-JWT_SECRET = get("JWT_SECRET", "")
+# Generate a transient secret if not set — sessions will be lost on restart.
+# Always set JWT_SECRET in .env for production deployments.
+JWT_SECRET = get("JWT_SECRET", "") or secrets.token_hex(32)
 
 # ── Cal.com (booking)
 CALCOM_API_KEY        = get("CALCOM_API_KEY", "")
@@ -124,6 +132,15 @@ def check_required_env_vars() -> None:
     """
     warnings = []
 
+    # Warn if no .env file exists (common oversight in fresh deployments)
+    env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
+    if not os.path.exists(env_path):
+        warnings.append("  [WARNING]  No .env file found — copy .env.example to .env and configure it")
+
+    # Warn if JWT_SECRET was auto-generated (sessions lost on restart)
+    if not os.environ.get("JWT_SECRET"):
+        warnings.append("  [WARNING]  JWT_SECRET not set — using transient secret (sessions lost on restart)")
+
     critical = {
         "OPENAI_API_KEY": OPENAI_API_KEY,
         "GATE_API_KEY":   GATE_API_KEY,
@@ -133,7 +150,6 @@ def check_required_env_vars() -> None:
         "GHL_LOCATION_ID":       GHL_LOCATION_ID,
         "GHL_WEBHOOK_SECRET":    GHL_WEBHOOK_SECRET,
         "RETELL_WEBHOOK_SECRET": RETELL_WEBHOOK_SECRET,
-        "JWT_SECRET":            JWT_SECRET,
         "SLACK_SIGNING_SECRET":  SLACK_SIGNING_SECRET,
     }
 

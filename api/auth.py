@@ -12,8 +12,9 @@ import hashlib
 import logging
 import os
 import secrets
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from functools import wraps
+from typing import Optional
 
 import bcrypt
 import jwt
@@ -25,8 +26,14 @@ logger = logging.getLogger(__name__)
 
 auth_bp = Blueprint("auth", __name__)
 
-# JWT secret — read from env or generate a stable one on first run
+# JWT secret — read from env or generate a transient one (sessions lost on restart)
 _JWT_SECRET = os.environ.get("JWT_SECRET") or secrets.token_hex(32)
+if not os.environ.get("JWT_SECRET"):
+    logger.critical(
+        "[AUTH] JWT_SECRET is not set in the environment. A random secret has been "
+        "generated for this process. All sessions will be invalidated on every restart. "
+        "Set JWT_SECRET to a stable value in your .env file before deploying to production."
+    )
 JWT_EXPIRY_HOURS = 24
 
 
@@ -52,12 +59,55 @@ def _make_token(user_id: int, role: str) -> str:
     return token
 
 
+def _check_revocation(token: str, token_hash: str, payload: dict) -> bool:
+    """Return True if token is revoked. Uses Redis fast-path, falls back to DB.
+
+    Caches the result in Redis with the token's remaining lifetime so
+    subsequent requests skip the SQLite query entirely.
+    """
+    from api.cache import cache_revocation, get_revocation
+    cached = get_revocation(token_hash)
+    if cached is not None:
+        return cached  # True = revoked, False = valid
+
+    row = fetch_one(
+        "SELECT revoked FROM auth_tokens WHERE token_hash = ?", (token_hash,)
+    )
+    revoked = not row or bool(row.get("revoked"))
+
+    # Cache result — TTL = remaining token lifetime (min 1s, max 90000s)
+    exp = payload.get("exp", 0)
+    now = int(datetime.now(timezone.utc).timestamp())
+    remaining = max(1, min(exp - now, 90_000))
+    cache_revocation(token_hash, revoked, remaining)
+    return revoked
+
+
+def _fetch_user_cached(user_id: int) -> Optional[dict]:
+    """Fetch user from Redis cache, or DB on miss. Returns None if not found."""
+    from api.cache import get as cache_get, set as cache_set
+    cache_key = f"solar:user:{user_id}"
+    hit = cache_get(cache_key)
+    if hit is not None:
+        return hit
+    user = fetch_one(
+        "SELECT id, email, name, role, client_id, active FROM users WHERE id = ?",
+        (user_id,),
+    )
+    if user:
+        cache_set(cache_key, dict(user), ttl=300)
+    return dict(user) if user else None
+
+
 def require_auth(roles=None):
     """Decorator factory: validates JWT and injects g.user.
 
     Args:
         roles: Optional list of allowed roles, e.g. ['owner', 'admin'].
                If None, any authenticated user is accepted.
+
+    Uses Redis for revocation check and user lookup to avoid SQLite on
+    every authenticated request.
     """
     def decorator(f):
         @wraps(f)
@@ -73,19 +123,11 @@ def require_auth(roles=None):
             except jwt.InvalidTokenError:
                 return jsonify({"error": "Invalid token"}), 401
 
-            # Revocation check
-            row = fetch_one(
-                "SELECT revoked FROM auth_tokens WHERE token_hash = ?",
-                (_hash_token(token),)
-            )
-            if not row or row.get("revoked"):
+            token_hash = _hash_token(token)
+            if _check_revocation(token, token_hash, payload):
                 return jsonify({"error": "Session revoked"}), 401
 
-            user = fetch_one(
-                "SELECT id, email, name, role, client_id, active "
-                "FROM users WHERE id = ?",
-                (payload["sub"],)
-            )
+            user = _fetch_user_cached(payload["sub"])
             if not user or not user.get("active"):
                 return jsonify({"error": "Account not found or disabled"}), 401
 
@@ -100,11 +142,16 @@ def require_auth(roles=None):
 
 
 def seed_owner():
-    """Create the default owner account if the users table is empty."""
+    """Create the default owner account if the users table is empty.
+
+    Generates a random password and prints it once. The admin MUST note
+    it down immediately and change it after first login.
+    """
     existing = fetch_one("SELECT id FROM users LIMIT 1")
     if existing:
         return
-    pw_hash = bcrypt.hashpw(b"changeme", bcrypt.gensalt()).decode()
+    temp_password = secrets.token_urlsafe(16)
+    pw_hash = bcrypt.hashpw(temp_password.encode(), bcrypt.gensalt()).decode()
     insert("users", {
         "email": "admin@solarswarm.io",
         "password_hash": pw_hash,
@@ -112,8 +159,10 @@ def seed_owner():
         "role": "owner",
         "active": 1,
     })
-    print("[AUTH] Default owner seeded  →  admin@solarswarm.io / changeme")
-    print("[AUTH] ⚠  Change this password immediately after first login.")
+    print("[AUTH] Default owner seeded  →  admin@solarswarm.io")
+    print(f"[AUTH] Temporary password   →  {temp_password}")
+    print("[AUTH] ⚠  Save this password now — it will NOT be shown again.")
+    print("[AUTH] ⚠  Change it immediately after first login.")
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -159,7 +208,8 @@ def logout():
     """POST /api/auth/logout — revoke the current session token."""
     header = request.headers.get("Authorization", "")
     if header.startswith("Bearer "):
-        token_hash = _hash_token(header[7:])
+        token = header[7:]
+        token_hash = _hash_token(token)
         try:
             with get_conn() as conn:
                 conn.execute(
@@ -168,6 +218,12 @@ def logout():
                 )
         except Exception as e:
             logger.warning(f"[AUTH] logout revocation error: {e}")
+        # Evict Redis cache so the revocation is immediately visible
+        try:
+            from api.cache import evict_token
+            evict_token(token_hash)
+        except Exception:
+            pass
     return jsonify({"ok": True}), 200
 
 
@@ -188,6 +244,12 @@ def refresh_token():
             )
     except Exception as e:
         logger.warning(f"[AUTH] refresh revocation error: {e}")
+    # Evict old token from Redis cache immediately
+    try:
+        from api.cache import evict_token
+        evict_token(old_hash)
+    except Exception:
+        pass
 
     new_token = _make_token(g.user["id"], g.user["role"])
     return jsonify({
@@ -229,4 +291,10 @@ def change_password():
 
     new_hash = bcrypt.hashpw(new_pw.encode(), bcrypt.gensalt()).decode()
     update("users", g.user["id"], {"password_hash": new_hash})
+    # Evict user from Redis cache so next request reloads updated record
+    try:
+        from api.cache import delete as cache_delete
+        cache_delete(f"solar:user:{g.user['id']}")
+    except Exception:
+        pass
     return jsonify({"ok": True}), 200

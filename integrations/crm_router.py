@@ -1,7 +1,7 @@
 """CRM Router — Abstraction layer for multi-CRM support.
 
 Routes all CRM operations to whichever platform is configured.
-Priority order: GoHighLevel → HubSpot → Salesforce
+Priority order: GoHighLevel → HubSpot → Salesforce → Agile CRM
 
 Agents and workers call crm_router functions directly —
 they never need to know which CRM is live.
@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 _ghl = None
 _hubspot = None
 _salesforce = None
+_agilecrm = None
 
 
 def _get_ghl():
@@ -52,14 +53,23 @@ def _get_salesforce():
     return _salesforce
 
 
+def _get_agilecrm():
+    """Lazy-load Agile CRM client."""
+    global _agilecrm
+    if _agilecrm is None:
+        from integrations import agilecrm_client
+        _agilecrm = agilecrm_client
+    return _agilecrm
+
+
 def active_crm() -> str:
     """Return the name of the currently configured CRM.
 
-    Checks configuration in priority order: GHL → HubSpot → Salesforce.
+    Checks configuration in priority order: GHL → HubSpot → Salesforce → Agile CRM.
     Falls back to 'none' if nothing is configured.
 
     Returns:
-        CRM name string: 'ghl' | 'hubspot' | 'salesforce' | 'none'
+        CRM name string: 'ghl' | 'hubspot' | 'salesforce' | 'agilecrm' | 'none'
     """
     if config.GHL_API_KEY:
         return "ghl"
@@ -67,6 +77,8 @@ def active_crm() -> str:
         return "hubspot"
     if config.SALESFORCE_USERNAME:
         return "salesforce"
+    if config.AGILECRM_API_KEY:
+        return "agilecrm"
     return "none"
 
 
@@ -83,22 +95,26 @@ def all_configured_crms() -> list[str]:
         crms.append("hubspot")
     if config.SALESFORCE_USERNAME:
         crms.append("salesforce")
+    if config.AGILECRM_API_KEY:
+        crms.append("agilecrm")
     return crms
 
 
-def _route(ghl_fn, hubspot_fn, sf_fn, *args, **kwargs) -> Any:
+def _route(ghl_fn, hubspot_fn, sf_fn, *args, agilecrm_fn=None, **kwargs) -> Any:
     """Route a call to the active CRM's function.
 
     Args:
         ghl_fn: GHL client function name string
         hubspot_fn: HubSpot client function name string
         sf_fn: Salesforce client function name string
+        agilecrm_fn: Agile CRM client function name string (defaults to ghl_fn)
         *args, **kwargs: Arguments forwarded to the chosen function
 
     Returns:
         Result from the active CRM's function, or None if unconfigured
     """
     crm = active_crm()
+    fn_name = agilecrm_fn or ghl_fn
     try:
         if crm == "ghl":
             return getattr(_get_ghl(), ghl_fn)(*args, **kwargs)
@@ -106,6 +122,8 @@ def _route(ghl_fn, hubspot_fn, sf_fn, *args, **kwargs) -> Any:
             return getattr(_get_hubspot(), hubspot_fn)(*args, **kwargs)
         if crm == "salesforce":
             return getattr(_get_salesforce(), sf_fn)(*args, **kwargs)
+        if crm == "agilecrm":
+            return getattr(_get_agilecrm(), fn_name)(*args, **kwargs)
     except Exception as e:
         logger.error(f"[CRM_ROUTER] {crm}.{ghl_fn} failed: {e}")
         return None
@@ -199,8 +217,8 @@ def create_task(contact_id: str, title: str, due_date: str) -> dict | None:
 def send_sms(contact_id: str, message: str) -> dict | None:
     """Send an SMS to a contact via the active CRM.
 
-    Note: HubSpot and Salesforce do not natively send SMS — this falls
-    back to None for those platforms. Use a dedicated SMS provider instead.
+    Note: HubSpot, Salesforce, and Agile CRM do not natively send SMS —
+    this falls back to None for those platforms. Use a dedicated SMS provider instead.
 
     Args:
         contact_id: CRM contact id
@@ -219,8 +237,6 @@ def send_sms(contact_id: str, message: str) -> dict | None:
 def add_note(contact_id: str, note_body: str) -> dict | None:
     """Add a note to a contact in the active CRM.
 
-    GHL does not have a native notes API — this is a no-op for GHL.
-
     Args:
         contact_id: CRM contact id
         note_body: Note text
@@ -228,35 +244,23 @@ def add_note(contact_id: str, note_body: str) -> dict | None:
     Returns:
         Result dict or None
     """
-    crm = active_crm()
-    if crm == "hubspot":
-        return _get_hubspot().add_note(contact_id, note_body)
-    if crm == "salesforce":
-        return _get_salesforce().add_note(contact_id, note_body)
-    logger.warning(f"[CRM_ROUTER] Notes not supported for {crm} — skipped")
-    return None
+    return _route("add_note", "add_note", "add_note", contact_id, note_body)
 
 
 def get_pipeline_stages(pipeline_id: str = None) -> list:
     """Get pipeline stages from the active CRM.
 
     Args:
-        pipeline_id: Pipeline id (required for GHL and HubSpot, optional for Salesforce)
+        pipeline_id: Pipeline id (required for GHL and HubSpot, optional for others)
 
     Returns:
         List of stage dicts or empty list
     """
-    crm = active_crm()
-    try:
-        if crm == "ghl":
-            return _get_ghl().get_pipeline_stages(pipeline_id or "")
-        if crm == "hubspot":
-            return _get_hubspot().get_pipeline_stages(pipeline_id or "")
-        if crm == "salesforce":
-            return _get_salesforce().get_pipeline_stages()
-    except Exception as e:
-        logger.error(f"[CRM_ROUTER] get_pipeline_stages failed: {e}")
-    return []
+    result = _route(
+        "get_pipeline_stages", "get_pipeline_stages", "get_pipeline_stages",
+        pipeline_id or "",
+    )
+    return result if result is not None else []
 
 
 def is_configured() -> bool:
@@ -277,32 +281,10 @@ def find_contact_by_phone(phone: str) -> dict | None:
     Returns:
         Contact dict or None if not found
     """
-    crm = active_crm()
-    try:
-        if crm == "ghl":
-            ghl = _get_ghl()
-            result = ghl._request("GET", f"/contacts/search/duplicate?phone={phone}")
-            return result.get("contact") if result else None
-        if crm == "hubspot":
-            hs = _get_hubspot()
-            data = {
-                "filterGroups": [{"filters": [{"propertyName": "phone", "operator": "EQ", "value": phone}]}],
-                "properties": ["firstname", "lastname", "email", "phone", "city", "state"],
-                "limit": 1,
-            }
-            result = hs._request("POST", "/crm/v3/objects/contacts/search", data=data)
-            if result and result.get("results"):
-                return result["results"][0]
-            return None
-        if crm == "salesforce":
-            sf = _get_salesforce()
-            # Escape single quotes to prevent SOQL injection (SOQL escape = '' for ')
-            safe_phone = str(phone).replace("'", "\\'")
-            records = sf._soql(f"SELECT Id, FirstName, LastName, Email, Phone, MailingCity, MailingState FROM Contact WHERE Phone = '{safe_phone}' LIMIT 1")
-            return records[0] if records else None
-    except Exception as e:
-        logger.error(f"[CRM_ROUTER] find_contact_by_phone failed: {e}")
-    return None
+    return _route(
+        "find_contact_by_phone", "find_contact_by_phone", "find_contact_by_phone",
+        phone,
+    )
 
 
 def status() -> dict:
@@ -316,4 +298,5 @@ def status() -> dict:
         "ghl": bool(config.GHL_API_KEY),
         "hubspot": bool(config.HUBSPOT_API_KEY),
         "salesforce": bool(config.SALESFORCE_USERNAME),
+        "agilecrm": bool(config.AGILECRM_API_KEY),
     }

@@ -5,11 +5,18 @@ SMS sending, and task creation.
 
 All functions handle auth headers automatically.
 Returns None on failure (never raises) to keep callers simple.
+
+Rate limiting: A token bucket proactively paces requests to stay under
+GHL's API limits (~100 req/10s for sub-accounts), preventing 429 cascades
+during bulk operations like CRM sync or batch lead pushes.
 """
 
 import logging
-import requests
+import threading
+import time
 from datetime import datetime
+
+import api_helpers
 import config
 
 logger = logging.getLogger(__name__)
@@ -22,8 +29,67 @@ HEADERS = {
 }
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# TOKEN BUCKET RATE LIMITER
+# ─────────────────────────────────────────────────────────────────────────────
+
+class _TokenBucket:
+    """Thread-safe token bucket for proactive GHL API rate limiting.
+
+    Paces requests to stay comfortably under GHL's rate limits rather than
+    waiting for 429 responses and relying on exponential backoff.
+
+    Default: 8 requests/second with burst capacity of 15. This stays well
+    under GHL's ~100 req/10s sub-account limit while allowing short bursts
+    for normal interactive use (voice calls, dashboard).
+    """
+
+    def __init__(self, rate: float = 8.0, capacity: int = 15):
+        self._rate = rate          # tokens added per second
+        self._capacity = capacity  # max burst size
+        self._tokens = float(capacity)
+        self._last_refill = time.monotonic()
+        self._lock = threading.Lock()
+
+    def acquire(self, timeout: float = 30.0) -> bool:
+        """Block until a token is available or timeout expires.
+
+        Args:
+            timeout: Max seconds to wait for a token
+
+        Returns:
+            True if token acquired, False if timed out
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            with self._lock:
+                self._refill()
+                if self._tokens >= 1.0:
+                    self._tokens -= 1.0
+                    return True
+                # Calculate wait time until next token
+                wait = (1.0 - self._tokens) / self._rate
+
+            if time.monotonic() + wait > deadline:
+                logger.warning("[GHL] Rate limiter timeout; request may be delayed")
+                return False
+            time.sleep(min(wait, 0.25))
+
+    def _refill(self):
+        now = time.monotonic()
+        elapsed = now - self._last_refill
+        self._tokens = min(self._capacity, self._tokens + elapsed * self._rate)
+        self._last_refill = now
+
+
+_rate_limiter = _TokenBucket()
+
+
 def _request(method: str, endpoint: str, data: dict = None) -> dict | None:
     """Make an authenticated request to the GHL API.
+
+    Proactively rate-limited via token bucket to prevent 429 cascades
+    during bulk operations.
 
     Args:
         method: HTTP method (GET, POST, PUT, PATCH, DELETE)
@@ -34,14 +100,15 @@ def _request(method: str, endpoint: str, data: dict = None) -> dict | None:
         Response JSON dict or None on failure
     """
     if not config.GHL_API_KEY:
-        logger.warning("[GHL] No API key configured — skipping GHL call")
+        logger.warning("[GHL] No API key configured; skipping GHL call")
         return None
+    _rate_limiter.acquire()
     try:
         url = f"{BASE_URL}{endpoint}"
-        resp = requests.request(method, url, headers=HEADERS, json=data, timeout=15)
+        resp = api_helpers.request_with_retry(method, url, headers=HEADERS, json=data, timeout=15)
         if resp.status_code in (200, 201):
             return resp.json()
-        logger.error(f"[GHL] {method} {endpoint} → HTTP {resp.status_code}: {resp.text[:200]}")
+        logger.error(f"[GHL] {method} {endpoint} -> HTTP {resp.status_code}: {resp.text[:200]}")
         return None
     except Exception as e:
         logger.error(f"[GHL] Request failed: {e}")
@@ -192,6 +259,19 @@ def get_pipeline_stages(pipeline_id: str) -> list:
     if not result:
         return []
     return result.get("stages", [])
+
+
+def find_contact_by_phone(phone: str) -> dict | None:
+    """Search for a contact by phone number.
+
+    Args:
+        phone: Phone number in E.164 format (e.g. +61412345678)
+
+    Returns:
+        Contact dict or None if not found
+    """
+    result = _request("GET", f"/contacts/search/duplicate?phone={phone}")
+    return result.get("contact") if result else None
 
 
 def get_contacts(location_id: str | None = None, limit: int = 100) -> list:

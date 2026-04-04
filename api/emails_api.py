@@ -55,8 +55,12 @@ def list_emails():
         conditions.append("urgency_score >= ?")
         params.append(urgency_min)
     if search:
-        conditions.append("(from_email LIKE ? OR from_name LIKE ? OR subject LIKE ?)")
-        like = f"%{search}%"
+        # Escape LIKE special characters to prevent wildcard injection
+        safe = search.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        conditions.append(
+            r"(from_email LIKE ? OR from_name LIKE ? OR subject LIKE ? ESCAPE '\')"
+        )
+        like = f"%{safe}%"
         params += [like, like, like]
 
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""

@@ -25,6 +25,7 @@ import email.utils
 import imaplib
 import json
 import logging
+import random
 import re
 import threading
 import time
@@ -114,6 +115,8 @@ Requirements:
 - Keep it under 160 words
 - Sign off as "The {company_name} Team"
 - Do NOT include a subject line — body only
+- MUST end with this exact footer after the sign-off (on a new line, separated by a blank line):
+  "This email was drafted with the assistance of AI and reviewed by {company_name}."
 
 Previous thread context (newest first):
 {thread_context}
@@ -388,7 +391,8 @@ def _fallback_draft(company_name: str, from_name: str) -> str:
         "roof, review your electricity usage, and give you a personalised "
         "recommendation.\n\n"
         "Reply to this email or call us to book your free assessment today.\n\n"
-        f"The {company_name} Team"
+        f"The {company_name} Team\n\n"
+        f"This email was drafted with the assistance of AI and reviewed by {company_name}."
     )
 
 
@@ -607,6 +611,103 @@ def _resolve_client_from_email(to_address: str) -> str | None:
 # IMAP POLLING (optional — polls a direct inbox)
 # ─────────────────────────────────────────────────────────────────────────────
 
+# IMAP-specific retry configuration
+_IMAP_MAX_RETRIES = 3
+_IMAP_BASE_DELAY = 2.0    # seconds
+_IMAP_MAX_DELAY = 60.0    # seconds cap
+
+# Substrings that indicate a permanent (non-retryable) IMAP auth failure
+_IMAP_PERMANENT_ERROR_HINTS = (
+    "authenticationfailed",
+    "login failed",
+    "invalid credentials",
+    "authentication failed",
+    "bad credentials",
+)
+
+
+def _connect_imap_with_retry(
+    host: str, user: str, password: str, folder: str
+) -> imaplib.IMAP4_SSL:
+    """Open an IMAP4_SSL connection with exponential backoff retry.
+
+    Distinguishes permanent auth failures (not retried) from transient
+    network/server errors (retried up to _IMAP_MAX_RETRIES times).
+
+    Args:
+        host:     IMAP server hostname
+        user:     Login username
+        password: Login password
+        folder:   Mailbox folder to SELECT
+
+    Returns:
+        Connected and selected imaplib.IMAP4_SSL instance
+
+    Raises:
+        imaplib.IMAP4.error: On permanent auth failure or exhausted retries
+        OSError: On network-level failure after all retries
+    """
+    for attempt in range(_IMAP_MAX_RETRIES + 1):
+        try:
+            mail = imaplib.IMAP4_SSL(host)
+            typ, data = mail.login(user, password)
+            if typ != "OK":
+                raise imaplib.IMAP4.error(f"Login rejected: {typ} {data}")
+            mail.select(folder)
+            if attempt > 0:
+                logger.info(
+                    "[EMAIL AGENT] IMAP connected on retry %d", attempt
+                )
+            return mail
+
+        except imaplib.IMAP4.error as exc:
+            # Permanent auth errors — no point retrying
+            if any(hint in str(exc).lower() for hint in _IMAP_PERMANENT_ERROR_HINTS):
+                logger.error(
+                    "[EMAIL AGENT] IMAP permanent auth error — not retrying: %s", exc
+                )
+                raise
+
+            if attempt == _IMAP_MAX_RETRIES:
+                logger.error(
+                    "[EMAIL AGENT] IMAP connect failed after %d retries: %s",
+                    _IMAP_MAX_RETRIES, exc,
+                )
+                raise
+
+            delay = min(
+                _IMAP_BASE_DELAY * (2 ** attempt) + random.uniform(0, _IMAP_BASE_DELAY),
+                _IMAP_MAX_DELAY,
+            )
+            logger.warning(
+                "[EMAIL AGENT] IMAP error, retrying in %.1fs (attempt %d/%d): %s",
+                delay, attempt + 1, _IMAP_MAX_RETRIES, exc,
+            )
+            time.sleep(delay)
+
+        except OSError as exc:
+            # Network-level errors: DNS failure, connection refused, SSL, etc.
+            if attempt == _IMAP_MAX_RETRIES:
+                logger.error(
+                    "[EMAIL AGENT] IMAP network error after %d retries: %s",
+                    _IMAP_MAX_RETRIES, exc,
+                )
+                raise
+
+            delay = min(
+                _IMAP_BASE_DELAY * (2 ** attempt) + random.uniform(0, _IMAP_BASE_DELAY),
+                _IMAP_MAX_DELAY,
+            )
+            logger.warning(
+                "[EMAIL AGENT] IMAP network error, retrying in %.1fs (attempt %d/%d): %s",
+                delay, attempt + 1, _IMAP_MAX_RETRIES, exc,
+            )
+            time.sleep(delay)
+
+    # Unreachable — loop always raises or returns first
+    raise imaplib.IMAP4.error("IMAP connection retry logic error")
+
+
 def start_imap_polling(interval_seconds: int = 120):
     """Start background thread that polls the configured IMAP inbox.
 
@@ -621,12 +722,27 @@ def start_imap_polling(interval_seconds: int = 120):
 
     def _poll():
         print(f"[EMAIL AGENT] IMAP polling started — every {interval_seconds}s")
+        fail_count = 0
+        _max_poll_backoff = 3600  # 1-hour cap on inter-poll backoff
+
         while True:
             try:
                 _check_imap_inbox()
-            except Exception as e:
-                logger.error(f"[EMAIL AGENT] IMAP poll error: {e}")
-            time.sleep(interval_seconds)
+                fail_count = 0  # reset streak on success
+                time.sleep(interval_seconds)
+            except Exception as exc:
+                fail_count += 1
+                # Exponential backoff capped at _max_poll_backoff
+                backoff = min(
+                    interval_seconds * (2 ** min(fail_count - 1, 6)),
+                    _max_poll_backoff,
+                )
+                logger.error(
+                    "[EMAIL AGENT] IMAP poll error (failure #%d), "
+                    "sleeping %.0fs before retry: %s",
+                    fail_count, backoff, exc,
+                )
+                time.sleep(backoff)
 
     thread = threading.Thread(target=_poll, daemon=True, name="IMAPPoller")
     thread.start()
@@ -634,46 +750,46 @@ def start_imap_polling(interval_seconds: int = 120):
 
 
 def _check_imap_inbox():
-    """Connect to IMAP and process all unread messages."""
+    """Connect to IMAP with retry and process all unread messages."""
     host      = config.IMAP_HOST
     user      = config.IMAP_USER
     password  = config.IMAP_PASS
     folder    = config.IMAP_FOLDER
     client_id = config.DEFAULT_CLIENT_ID
 
-    mail = imaplib.IMAP4_SSL(host)
-    mail.login(user, password)
-    mail.select(folder)
+    mail = _connect_imap_with_retry(host, user, password, folder)
+    try:
+        _, msgs = mail.search(None, "UNSEEN")
+        msg_ids = msgs[0].split()
+        if not msg_ids:
+            return
 
-    _, msgs = mail.search(None, "UNSEEN")
-    msg_ids = msgs[0].split()
-    if not msg_ids:
-        mail.logout()
-        return
+        print(f"[EMAIL AGENT] {len(msg_ids)} unread email(s) found via IMAP")
+        for msg_id in msg_ids:
+            try:
+                _, msg_data = mail.fetch(msg_id, "(RFC822)")
+                raw_email   = msg_data[0][1]
+                msg         = email.message_from_bytes(raw_email)
 
-    print(f"[EMAIL AGENT] {len(msg_ids)} unread email(s) found via IMAP")
-    for msg_id in msg_ids:
+                from_addr = email.utils.parseaddr(msg.get("From", ""))[1]
+                subject   = msg.get("Subject", "")
+                body      = _extract_email_body(msg)
+
+                process_email({
+                    "from_address": from_addr,
+                    "subject":      subject,
+                    "body":         body,
+                }, client_id=client_id)
+
+                mail.store(msg_id, "+FLAGS", "\\Seen")
+
+            except Exception as exc:
+                logger.error("[EMAIL AGENT] IMAP msg %s error: %s", msg_id, exc)
+    finally:
         try:
-            _, msg_data = mail.fetch(msg_id, "(RFC822)")
-            raw_email   = msg_data[0][1]
-            msg         = email.message_from_bytes(raw_email)
-
-            from_addr = email.utils.parseaddr(msg.get("From", ""))[1]
-            subject   = msg.get("Subject", "")
-            body      = _extract_email_body(msg)
-
-            process_email({
-                "from_address": from_addr,
-                "subject":      subject,
-                "body":         body,
-            }, client_id=client_id)
-
-            mail.store(msg_id, "+FLAGS", "\\Seen")
-
-        except Exception as e:
-            logger.error(f"[EMAIL AGENT] IMAP msg {msg_id} error: {e}")
-
-    mail.logout()
+            mail.logout()
+        except Exception:
+            pass
 
 
 def _extract_email_body(msg) -> str:

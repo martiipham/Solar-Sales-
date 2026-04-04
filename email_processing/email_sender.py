@@ -6,7 +6,8 @@ Functions:
 """
 
 import logging
-import requests
+
+import api_helpers
 import config
 
 logger = logging.getLogger(__name__)
@@ -49,7 +50,7 @@ def send_via_ghl(to_email: str, subject: str, body: str, location_id: str = None
         payload["contactId"] = contact_id
 
     try:
-        resp = requests.post(
+        resp = api_helpers.post(
             f"{_BASE_URL}/conversations/messages",
             headers=_HEADERS,
             json=payload,
@@ -83,7 +84,7 @@ def get_thread_history(contact_id: str, limit: int = 5) -> list:
         if not convo_id:
             return []
 
-        resp = requests.get(
+        resp = api_helpers.get(
             f"{_BASE_URL}/conversations/{convo_id}/messages",
             headers=_HEADERS,
             params={"limit": limit * 2},  # fetch extra, filter to email only
@@ -112,7 +113,7 @@ def _get_conversation_id(contact_id: str) -> str | None:
         Conversation ID string or None
     """
     try:
-        resp = requests.get(
+        resp = api_helpers.get(
             f"{_BASE_URL}/conversations/search",
             headers=_HEADERS,
             params={"locationId": config.GHL_LOCATION_ID, "contactId": contact_id},
@@ -139,7 +140,7 @@ def _resolve_contact_by_email(email: str) -> str | None:
     if not config.GHL_API_KEY or not email:
         return None
     try:
-        resp = requests.get(
+        resp = api_helpers.get(
             f"{_BASE_URL}/contacts/",
             headers=_HEADERS,
             params={"locationId": config.GHL_LOCATION_ID, "query": email},

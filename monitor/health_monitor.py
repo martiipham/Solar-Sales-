@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 
 import requests
 
+import api_helpers
 import config
 
 logger = logging.getLogger(__name__)
@@ -51,7 +52,7 @@ def _check_endpoint(name: str, url: str, timeout: int = 5) -> dict:
     """
     t0 = time.monotonic()
     try:
-        resp = requests.get(url, timeout=timeout)
+        resp = api_helpers.get(url, timeout=timeout, max_retries=1, base_delay=0.5)
         latency = round((time.monotonic() - t0) * 1000)
         ok = resp.status_code == 200
         return {"name": name, "ok": ok, "status_code": resp.status_code,
@@ -74,10 +75,11 @@ def _check_openai() -> dict:
                 "latency_ms": 0, "error": "key not configured — skipped"}
     t0 = time.monotonic()
     try:
-        resp = requests.get(
+        resp = api_helpers.get(
             "https://api.openai.com/v1/models",
             headers={"Authorization": f"Bearer {config.OPENAI_API_KEY}"},
             timeout=8,
+            max_retries=1,
         )
         latency = round((time.monotonic() - t0) * 1000)
         ok = resp.status_code == 200
@@ -120,7 +122,7 @@ def _send_sms(body: str) -> None:
         return
 
     try:
-        resp = requests.post(
+        resp = api_helpers.post(
             f"https://api.twilio.com/2010-04-01/Accounts/{sid}/Messages.json",
             auth=(sid, token),
             data={"From": from_, "To": to, "Body": body},

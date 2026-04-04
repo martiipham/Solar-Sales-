@@ -53,18 +53,21 @@ def _security_headers(response):
 def _verify_ghl_signature(req) -> bool:
     """Verify GHL webhook HMAC-SHA256 signature.
 
-    If GHL_WEBHOOK_SECRET is not set, allows the request through with a warning
-    so existing setups without a secret keep working.
+    Rejects the request if GHL_WEBHOOK_SECRET is not configured — allowing
+    unsigned webhooks in production is a security vulnerability.
 
     Args:
         req: Flask request object
 
     Returns:
-        True if signature is valid or no secret is configured
+        True if signature is valid, False otherwise
     """
     if not config.GHL_WEBHOOK_SECRET:
-        logger.warning("[GHL WEBHOOK] GHL_WEBHOOK_SECRET not set — skipping signature check")
-        return True
+        logger.error(
+            "[GHL WEBHOOK] GHL_WEBHOOK_SECRET is not set — rejecting request. "
+            "Configure GHL_WEBHOOK_SECRET in your environment to accept GHL events."
+        )
+        return False
 
     sig = req.headers.get("X-GHL-Signature", "")
     if not sig:
